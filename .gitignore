@@ -1,0 +1,38 @@
+# Rust
+target/
+**/*.rs.bk
+
+# Python (将来 sender/ で使う)
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Flutter (将来 receiver/ で使う)
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Phase 0 サンプル/スクラッチ出力
+samples/
+scratch/
+
+# web 開発サーバ (serve_https.py) の実行時生成物
+# certs: 自己署名証明書 + 秘密鍵 (起動時に自動生成)
+# client_logs: /capture・/log の保存先 (実機キャプチャ PNG・ログ)
+web/certs/
+web/client_logs/

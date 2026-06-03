@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>beyond-qr Receiver</title>
+  <link rel="manifest" href="./manifest.json">
+  <meta name="theme-color" content="#222">
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0; padding: 0;
+      background: #111; color: #eee;
+      font-family: -apple-system, "Segoe UI", sans-serif;
+      display: flex; flex-direction: column;
+      min-height: 100dvh;
+    }
+    header { padding: 0.5em 1em; background: #1a1a1a; border-bottom: 1px solid #333; }
+    header h1 { margin: 0; font-size: 1.1em; }
+    main { flex: 1; display: flex; flex-direction: column; padding: 1em; gap: 1em; }
+    .stage {
+      position: relative;
+      width: 100%; max-width: 480px; aspect-ratio: 1/1;
+      align-self: center;
+      background: #000; border: 1px solid #444; overflow: hidden;
+    }
+    video, canvas { width: 100%; height: 100%; object-fit: cover; display: block; }
+    /* ざっくり「この辺に画像を写してね」の目印。厳密に合わせる必要はない */
+    .frame-overlay {
+      position: absolute; inset: 5%;
+      pointer-events: none;
+    }
+    .frame-overlay::before, .frame-overlay::after {
+      content: ""; position: absolute; width: 36px; height: 36px;
+      border: 3px solid #fc4;
+    }
+    .frame-overlay::before { top: -3px; left: -3px; border-right: none; border-bottom: none; }
+    .frame-overlay::after { bottom: -3px; right: -3px; border-left: none; border-top: none; }
+    .frame-overlay span {
+      position: absolute; top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(0,0,0,0.5); color: #fc4;
+      padding: 4px 10px; border-radius: 4px;
+      font-size: 12px; pointer-events: none;
+    }
+    .controls { display: flex; gap: 0.5em; justify-content: center; flex-wrap: wrap; }
+    button {
+      background: #fc4; color: #111; border: none; padding: 0.6em 1.5em;
+      font-size: 1em; font-weight: bold; border-radius: 4px;
+      cursor: pointer; min-width: 120px;
+    }
+    button:disabled { background: #555; color: #888; }
+    button.secondary { background: #444; color: #eee; }
+    .log {
+      max-width: 480px; align-self: center; width: 100%;
+      background: #181818; padding: 0.5em; border-radius: 4px;
+      font-family: monospace; font-size: 0.85em; line-height: 1.4;
+      max-height: 200px; overflow-y: auto;
+    }
+    .log .ok { color: #6c6; }
+    .log .ng { color: #f66; }
+    .log .info { color: #aaa; }
+    pre.payload {
+      background: #181818; padding: 0.5em; border-radius: 4px;
+      font-size: 0.75em; overflow-x: auto; max-height: 200px;
+      max-width: 480px; align-self: center; width: 100%;
+      box-sizing: border-box;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>beyond-qr Receiver</h1>
+  </header>
+  <main>
+    <div class="stage">
+      <video id="preview" autoplay playsinline muted></video>
+      <canvas id="captureCanvas" style="display:none"></canvas>
+      <div class="frame-overlay" id="overlay"><span>画像がだいたい収まれば OK</span></div>
+    </div>
+    <div class="controls">
+      <button id="startBtn">カメラ開始</button>
+      <button id="captureBtn" disabled>撮影 & 復号</button>
+      <button id="resetBtn" class="secondary" disabled>リセット</button>
+    </div>
+    <div class="controls">
+      <button id="sendLogBtn" class="secondary" disabled>ログをサーバーに送信</button>
+      <button id="sendImageBtn" class="secondary" disabled>キャプチャ画像を送信</button>
+    </div>
+    <div class="log" id="log"></div>
+    <pre class="payload" id="payload" style="display:none"></pre>
+    <div class="stage" id="capturedStage" style="display:none">
+      <canvas id="capturedView"></canvas>
+    </div>
+  </main>
+
+  <script type="module">
+    import init, { decode } from "./pkg/beyond_qr_core_wasm.js";
+    import {
+      decodeImageToCells, findFinderCenters,
+      sampleCellsThroughPerspective, quantizeWithCalibration,
+      PHASE_0_SPEC, PALETTE_RGB,
+    } from "./algo.js";
+
+    const log = document.getElementById("log");
+    const out = (msg, cls = "info") => {
+      const div = document.createElement("div");
+      div.className = cls;
+      div.textContent = msg;
+      log.appendChild(div);
+      log.scrollTop = log.scrollHeight;
+    };
+
+    const video = document.getElementById("preview");
+    const captureCanvas = document.getElementById("captureCanvas");
+    const startBtn = document.getElementById("startBtn");
+    const captureBtn = document.getElementById("captureBtn");
+    const resetBtn = document.getElementById("resetBtn");
+    const sendLogBtn = document.getElementById("sendLogBtn");
+    const sendImageBtn = document.getElementById("sendImageBtn");
+    const payloadPre = document.getElementById("payload");
+    let lastCapturedDataUrl = null;
+
+    let stream = null;
+
+    async function start() {
+      try {
+        await init();
+        out("[init] WASM loaded");
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 } },
+          audio: false,
+        });
+        video.srcObject = stream;
+        await video.play();
+        out(`[camera] ${video.videoWidth}x${video.videoHeight} 起動`);
+        startBtn.disabled = true;
+        captureBtn.disabled = false;
+      } catch (e) {
+        out(`[error] camera start: ${e.message}`, "ng");
+      }
+    }
+
+    /**
+     * 映像の中央正方形をそのまま targetSize×targetSize にスケールする。
+     * 画像の正確な位置合わせはアルゴリズム側 (findFinderCenters の象限探索) に任せる。
+     */
+    function cropCenterSquare(video, targetSize) {
+      const vw = video.videoWidth;
+      const vh = video.videoHeight;
+      const cropSize = Math.min(vw, vh);
+      const cropX = Math.floor((vw - cropSize) / 2);
+      const cropY = Math.floor((vh - cropSize) / 2);
+      captureCanvas.width = targetSize;
+      captureCanvas.height = targetSize;
+      const ctx = captureCanvas.getContext("2d", { willReadFrequently: true });
+      ctx.drawImage(video, cropX, cropY, cropSize, cropSize, 0, 0, targetSize, targetSize);
+      return { imageData: ctx.getImageData(0, 0, targetSize, targetSize), cropSize };
+    }
+
+    /** 撮影後のキャプチャ画像 + 検出ファインダー位置を画面に表示する。 */
+    function showCapturedWithMarkers(imgData, observedCorners) {
+      const stage = document.getElementById("capturedStage");
+      const cv = document.getElementById("capturedView");
+      stage.style.display = "block";
+      cv.width = imgData.width;
+      cv.height = imgData.height;
+      const ctx = cv.getContext("2d");
+      ctx.putImageData(imgData, 0, 0);
+      // ファインダー検出位置にマーカー
+      ctx.strokeStyle = "#fc4";
+      ctx.lineWidth = 3;
+      const labels = ["TL", "TR", "BL", "BR"];
+      observedCorners.forEach(([x, y], i) => {
+        ctx.beginPath();
+        ctx.arc(x, y, 14, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = "#fc4";
+        ctx.font = "bold 16px sans-serif";
+        ctx.fillText(labels[i], x + 18, y - 4);
+      });
+    }
+
+    function rgbFromImageData(imgData) {
+      const rgb = new Uint8Array(imgData.width * imgData.height * 3);
+      const data = imgData.data;
+      for (let i = 0, j = 0; i < data.length; i += 4, j += 3) {
+        rgb[j] = data[i];
+        rgb[j + 1] = data[i + 1];
+        rgb[j + 2] = data[i + 2];
+      }
+      return rgb;
+    }
+
+    function formatPayload(bytes) {
+      // ASCII であれば文字列、そうでなければ hex で
+      let ascii = "";
+      let isAscii = true;
+      for (const b of bytes) {
+        if (b >= 0x20 && b < 0x7f) ascii += String.fromCharCode(b);
+        else if (b === 0x0a || b === 0x0d || b === 0x09) ascii += String.fromCharCode(b);
+        else { isAscii = false; break; }
+      }
+      if (isAscii) return `text (${bytes.length}B):\n${ascii}`;
+      // hex dump (first 256 bytes)
+      const limit = Math.min(256, bytes.length);
+      let hex = `hex (${bytes.length}B, first ${limit}):\n`;
+      for (let i = 0; i < limit; i += 16) {
+        const row = Array.from(bytes.slice(i, i + 16))
+          .map(b => b.toString(16).padStart(2, "0")).join(" ");
+        hex += row + "\n";
+      }
+      return hex;
+    }
+
+    async function capture() {
+      try {
+        captureBtn.disabled = true;
+        const spec = PHASE_0_SPEC;
+        const targetSize = spec.gridWidth * spec.cellPx;  // 1024
+        const t0 = performance.now();
+        const { imageData, cropSize } = cropCenterSquare(video, targetSize);
+        const rgb = rgbFromImageData(imageData);
+        const t1 = performance.now();
+        out(`[capture] ${cropSize}→${targetSize}px in ${(t1 - t0).toFixed(0)}ms`);
+
+        // ステップ単位で観測ファインダー検出
+        const observed = findFinderCenters(rgb, targetSize, targetSize, spec.finderSize, spec.cellPx);
+        const t2 = performance.now();
+        out(`[finders] (${observed.map(([x,y]) => `${x},${y}`).join(") (")})`);
+        const fp = spec.finderSize * spec.cellPx;
+        const expectedTL = [fp/2, fp/2];
+        const dTL = Math.hypot(observed[0][0]-expectedTL[0], observed[0][1]-expectedTL[1]);
+        out(`[finders] TL err from expected: ${dTL.toFixed(1)}px (期待 ${expectedTL.join(",")})`);
+
+        // 撮影画像 + マーカーを下部に表示
+        showCapturedWithMarkers(imageData, observed);
+        // 画像送信ボタン用にデータ URL を保持
+        lastCapturedDataUrl = captureCanvas.toDataURL("image/png");
+        sendImageBtn.disabled = false;
+        sendLogBtn.disabled = false;
+
+        // 完全パイプライン
+        const cells = decodeImageToCells(rgb, targetSize, targetSize, spec);
+        const t3 = performance.now();
+        out(`[algo] cells in ${(t3 - t2).toFixed(0)}ms`);
+
+        let payload;
+        try {
+          payload = decode(
+            cells,
+            spec.gridWidth, spec.gridHeight, spec.cellPx,
+            spec.finderSize, spec.calibrationRowStart, spec.calibrationRows
+          );
+        } catch (e) {
+          out(`[decode] FAIL: ${e.message || e}`, "ng");
+          out(`[hint] 画像が見える距離で手ぶれを抑えて再撮影。画像が小さすぎるとセル解像不足`);
+          captureBtn.disabled = false;
+          resetBtn.disabled = false;
+          return;
+        }
+        const t4 = performance.now();
+        out(`[decode] ${payload.length}B in ${(t4 - t3).toFixed(0)}ms`, "ok");
+        payloadPre.textContent = formatPayload(payload);
+        payloadPre.style.display = "block";
+        resetBtn.disabled = false;
+        captureBtn.disabled = false;
+      } catch (e) {
+        out(`[error] capture: ${e.message || e}`, "ng");
+        captureBtn.disabled = false;
+      }
+    }
+
+    function reset() {
+      payloadPre.style.display = "none";
+      payloadPre.textContent = "";
+      document.getElementById("capturedStage").style.display = "none";
+      resetBtn.disabled = true;
+      sendLogBtn.disabled = true;
+      sendImageBtn.disabled = true;
+      lastCapturedDataUrl = null;
+      while (log.firstChild) log.removeChild(log.firstChild);
+      out("[reset] log cleared");
+    }
+
+    async function sendLog() {
+      try {
+        sendLogBtn.disabled = true;
+        const text = Array.from(log.children).map(d => d.textContent).join("\n");
+        const userAgent = navigator.userAgent;
+        const meta = `=== ${new Date().toISOString()} ===\nUA: ${userAgent}\nViewport: ${innerWidth}x${innerHeight}\n=== log ===\n`;
+        const res = await fetch("/log", {
+          method: "POST",
+          headers: { "Content-Type": "text/plain" },
+          body: meta + text,
+        });
+        out(`[send] log: ${res.status} ${res.ok ? "OK" : "FAIL"}`, res.ok ? "ok" : "ng");
+      } catch (e) {
+        out(`[send] log error: ${e.message || e}`, "ng");
+      } finally {
+        sendLogBtn.disabled = false;
+      }
+    }
+
+    async function sendImage() {
+      try {
+        if (!lastCapturedDataUrl) {
+          out("[send] no captured image yet", "ng");
+          return;
+        }
+        sendImageBtn.disabled = true;
+        const res = await fetch("/capture", {
+          method: "POST",
+          headers: { "Content-Type": "text/plain" },
+          body: lastCapturedDataUrl,
+        });
+        out(`[send] image: ${res.status} ${res.ok ? "OK" : "FAIL"}`, res.ok ? "ok" : "ng");
+      } catch (e) {
+        out(`[send] image error: ${e.message || e}`, "ng");
+      } finally {
+        sendImageBtn.disabled = false;
+      }
+    }
+
+    startBtn.addEventListener("click", start);
+    captureBtn.addEventListener("click", capture);
+    resetBtn.addEventListener("click", reset);
+    sendLogBtn.addEventListener("click", sendLog);
+    sendImageBtn.addEventListener("click", sendImage);
+
+    out("[init] click \"カメラ開始\" to begin", "info");
+  </script>
+</body>
+</html>

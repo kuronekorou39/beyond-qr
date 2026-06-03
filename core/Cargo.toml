@@ -1,0 +1,13 @@
+[package]
+name = "beyond-qr-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Optical data transmission core: encoder, decoder, color palette, ECC."
+
+[lib]
+name = "beyond_qr_core"
+path = "src/lib.rs"
+
+[dependencies]
+reed-solomon = { workspace = true }

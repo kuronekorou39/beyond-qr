@@ -1,0 +1,13 @@
+[package]
+name = "beyond-qr-fountain"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Fountain code (RaptorQ) wrapper for video QR streaming"
+
+[lib]
+name = "beyond_qr_fountain"
+path = "src/lib.rs"
+
+[dependencies]
+raptorq = { version = "2", default-features = false }

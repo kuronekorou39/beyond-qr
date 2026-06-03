@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>cell-level diff debug</title>
+  <style>
+    body { font-family: sans-serif; margin: 1em; background: #111; color: #eee; }
+    canvas { border: 1px solid #444; max-width: 100%; image-rendering: pixelated; }
+    .ok { color: #6c6; }
+    .ng { color: #f66; }
+  </style>
+</head>
+<body>
+  <h1>cell-level diff: 期待セル vs 観測セル</h1>
+  <div id="log"></div>
+  <h3>誤りマップ (赤 = 誤り、緑 = 正解、ファインダー/キャリブレーションは黒)</h3>
+  <canvas id="diff"></canvas>
+
+  <script type="module">
+    import init, { encode } from "./pkg/beyond_qr_core_wasm.js";
+    import { decodeImageToCells, findFinderCenters, PHASE_0_SPEC } from "./algo.js";
+
+    async function loadImage(url) {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      await new Promise((r, j) => { img.onload = r; img.onerror = j; img.src = url; });
+      return img;
+    }
+
+    const log = document.getElementById("log");
+    const out = (m, cls = "") => { const d = document.createElement("div"); d.className = cls; d.textContent = m; log.appendChild(d); };
+
+    function isReservedCell(r, c, spec) {
+      const fs = spec.finderSize;
+      const qz = fs + 1;
+      const W = spec.gridWidth, H = spec.gridHeight;
+      // Finders + quiet zone
+      if (r < qz && c < qz) return true;
+      if (r < qz && c >= W - qz) return true;
+      if (r >= H - qz && c < qz) return true;
+      if (r >= H - qz && c >= W - qz) return true;
+      // Calibration
+      const cs = spec.calibrationRowStart, cr = spec.calibrationRows;
+      if (r >= cs && r < cs + cr) return true;
+      return false;
+    }
+
+    async function main() {
+      await init();
+      out("[init] WASM loaded");
+
+      // 期待セル列 (input.bin → encode)
+      const inputRes = await fetch("./samples/input.bin");
+      const inputBytes = new Uint8Array(await inputRes.arrayBuffer());
+      const spec = PHASE_0_SPEC;
+      const expectedCells = encode(
+        inputBytes,
+        spec.gridWidth, spec.gridHeight, spec.cellPx,
+        spec.finderSize, spec.calibrationRowStart, spec.calibrationRows
+      );
+      out(`[expected] ${expectedCells.length} cells from ${inputBytes.length}B payload`);
+
+      // 観測画像 → セル
+      const img = await loadImage("./samples/real_capture.png");
+      const cv = document.createElement("canvas");
+      cv.width = img.naturalWidth;
+      cv.height = img.naturalHeight;
+      const ctx = cv.getContext("2d");
+      ctx.drawImage(img, 0, 0);
+      const data = ctx.getImageData(0, 0, cv.width, cv.height).data;
+      const rgb = new Uint8Array(cv.width * cv.height * 3);
+      for (let i = 0, j = 0; i < data.length; i += 4, j += 3) {
+        rgb[j] = data[i]; rgb[j+1] = data[i+1]; rgb[j+2] = data[i+2];
+      }
+      const observedCells = decodeImageToCells(rgb, cv.width, cv.height, spec);
+      out(`[observed] ${observedCells.length} cells from capture`);
+
+      // セル単位の誤差を計算
+      let totalDataCells = 0;
+      let errorDataCells = 0;
+      let calibErrors = 0;
+      let calibCells = 0;
+      const errorByRow = new Array(spec.gridHeight).fill(0);
+      const cellsByRow = new Array(spec.gridHeight).fill(0);
+      for (let r = 0; r < spec.gridHeight; r++) {
+        for (let c = 0; c < spec.gridWidth; c++) {
+          const idx = r * spec.gridWidth + c;
+          const reserved = isReservedCell(r, c, spec);
+          if (reserved) {
+            // ファインダー / キャリブレーション域
+            if (r >= spec.calibrationRowStart && r < spec.calibrationRowStart + spec.calibrationRows) {
+              calibCells++;
+              if (expectedCells[idx] !== observedCells[idx]) calibErrors++;
+            }
+            continue;
+          }
+          totalDataCells++;
+          cellsByRow[r]++;
+          if (expectedCells[idx] !== observedCells[idx]) {
+            errorDataCells++;
+            errorByRow[r]++;
+          }
+        }
+      }
+      out(`[data cells] ${totalDataCells} total`);
+      out(`[data errors] ${errorDataCells} (${(100*errorDataCells/totalDataCells).toFixed(1)}%)`);
+      out(`[calib errors] ${calibErrors} / ${calibCells} (${(100*calibErrors/calibCells).toFixed(1)}%)`);
+
+      // 誤差マップ
+      const dc = document.getElementById("diff");
+      dc.width = spec.gridWidth * 6;
+      dc.height = spec.gridHeight * 6;
+      const dctx = dc.getContext("2d");
+      for (let r = 0; r < spec.gridHeight; r++) {
+        for (let c = 0; c < spec.gridWidth; c++) {
+          const idx = r * spec.gridWidth + c;
+          const reserved = isReservedCell(r, c, spec);
+          let color;
+          if (reserved) color = "#222";
+          else if (expectedCells[idx] === observedCells[idx]) color = "#264";
+          else color = "#c33";
+          dctx.fillStyle = color;
+          dctx.fillRect(c * 6, r * 6, 6, 6);
+        }
+      }
+
+      // 行ごとの誤り数を表示 (上位 5 行)
+      const topErrors = errorByRow.map((e, r) => ({ r, e, total: cellsByRow[r] }))
+        .filter(x => x.total > 0)
+        .sort((a, b) => b.e - a.e).slice(0, 10);
+      out(`[top error rows] ${topErrors.map(x => `r${x.r}: ${x.e}/${x.total}`).join(", ")}`);
+    }
+    main().catch(e => out(`[err] ${e}`, "ng"));
+  </script>
+</body>
+</html>

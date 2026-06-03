@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>beyond-qr Receiver (Phase 1)</title>
+  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0; padding: 0;
+      background: #111; color: #eee;
+      font-family: -apple-system, "Segoe UI", sans-serif;
+      display: flex; flex-direction: column;
+      min-height: 100dvh;
+    }
+    header { padding: 0.5em 1em; background: #1a1a1a; border-bottom: 1px solid #333; }
+    header h1 { margin: 0; font-size: 1.1em; }
+    main { flex: 1; display: flex; flex-direction: column; padding: 1em; gap: 0.8em; }
+    .stage {
+      position: relative;
+      width: 100%; max-width: 480px; aspect-ratio: 1/1;
+      align-self: center;
+      background: #000; border: 1px solid #444; overflow: hidden;
+    }
+    video, canvas { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .controls { display: flex; gap: 0.5em; justify-content: center; flex-wrap: wrap; }
+    button {
+      background: #fc4; color: #111; border: none; padding: 0.6em 1.2em;
+      font-size: 1em; font-weight: bold; border-radius: 4px;
+      cursor: pointer; min-width: 120px;
+    }
+    button:disabled { background: #555; color: #888; }
+    button.secondary { background: #444; color: #eee; }
+    .progress {
+      max-width: 480px; align-self: center; width: 100%;
+      background: #1a1a1a; padding: 0.6em 0.8em; border-radius: 4px;
+      font-family: monospace; font-size: 0.9em;
+    }
+    .progress-bar {
+      height: 6px; background: #333; border-radius: 3px; margin-top: 4px;
+      overflow: hidden;
+    }
+    .progress-bar > div { height: 100%; background: #fc4; transition: width 0.2s; }
+    .log {
+      max-width: 480px; align-self: center; width: 100%;
+      background: #181818; padding: 0.5em; border-radius: 4px;
+      font-family: monospace; font-size: 0.8em;
+      max-height: 140px; overflow-y: auto;
+    }
+    .log .ok { color: #6c6; }
+    .log .ng { color: #f66; }
+    .log .info { color: #aaa; }
+    .result {
+      max-width: 480px; align-self: center; width: 100%;
+      background: #1c2810; border: 1px solid #2c5; border-radius: 4px;
+      padding: 0.8em; display: none;
+    }
+    .result pre {
+      margin: 0.3em 0; max-height: 200px; overflow: auto;
+      font-size: 0.75em; background: #0a0a0a; padding: 0.5em; border-radius: 4px;
+    }
+    a.dl-link {
+      display: inline-block; padding: 0.4em 0.8em;
+      background: #2c5; color: #111; text-decoration: none;
+      border-radius: 4px; font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>beyond-qr Receiver (Phase 1: QR + Fountain)</h1>
+  </header>
+  <main>
+    <div class="stage">
+      <video id="preview" autoplay playsinline muted></video>
+      <canvas id="captureCanvas" style="display:none"></canvas>
+    </div>
+    <div class="controls">
+      <button id="startBtn">カメラ開始</button>
+      <button id="stopBtn" class="secondary" disabled>停止</button>
+      <button id="sendLogBtn" class="secondary" disabled>ログ送信</button>
+    </div>
+    <div class="progress" id="progress">
+      <div>待機中</div>
+      <div class="progress-bar"><div id="progressBar" style="width: 0%"></div></div>
+    </div>
+    <div class="log" id="log"></div>
+    <div class="result" id="result">
+      <strong>復元成功!</strong>
+      <pre id="resultPreview"></pre>
+      <a id="downloadLink" class="dl-link">ダウンロード</a>
+    </div>
+  </main>
+
+  <script type="module">
+    import init, { FountainDecoder } from "./pkg/beyond_qr_core_wasm.js";
+
+    const $ = (id) => document.getElementById(id);
+    const log = $("log");
+    const video = $("preview");
+    const captureCanvas = $("captureCanvas");
+    const progressEl = $("progress");
+    const progressBar = $("progressBar");
+    const result = $("result");
+
+    const out = (msg, cls = "info") => {
+      const div = document.createElement("div");
+      div.className = cls;
+      div.textContent = msg;
+      log.appendChild(div);
+      log.scrollTop = log.scrollHeight;
+    };
+
+    let stream = null;
+    let decoder = null;
+    let scanLoop = null;
+    let uniquePackets = new Set();   // ESI 等で重複検知
+    let totalAttempts = 0;
+    let successfulDecodes = 0;
+    let payload = null;
+    let lastOtiHex = null;
+
+    async function startCamera() {
+      try {
+        await init();
+        out("[init] WASM loaded");
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 } },
+          audio: false,
+        });
+        video.srcObject = stream;
+        await video.play();
+        out(`[camera] ${video.videoWidth}x${video.videoHeight} 起動`);
+        $("startBtn").disabled = true;
+        $("stopBtn").disabled = false;
+        $("sendLogBtn").disabled = false;
+        scanLoop = requestAnimationFrame(scanFrame);
+      } catch (e) {
+        out(`[error] camera: ${e.message}`, "ng");
+      }
+    }
+
+    function stop() {
+      if (scanLoop) cancelAnimationFrame(scanLoop);
+      scanLoop = null;
+      if (stream) {
+        stream.getTracks().forEach(t => t.stop());
+        stream = null;
+      }
+      $("startBtn").disabled = false;
+      $("stopBtn").disabled = true;
+    }
+
+    function updateProgress() {
+      const text = decoder
+        ? `OTI: ${lastOtiHex} | payload ${decoder.payloadSize()}B | unique packets: ${uniquePackets.size} (received ${decoder.packetsReceived()})`
+        : `frames scanned: ${totalAttempts} | QRs detected: ${successfulDecodes}`;
+      progressEl.firstElementChild.textContent = text;
+      if (decoder) {
+        const payloadBytes = Number(decoder.payloadSize());
+        const estimatedSourcePackets = Math.ceil(payloadBytes / 500);
+        const pct = Math.min(100, (uniquePackets.size / estimatedSourcePackets) * 100);
+        progressBar.style.width = `${pct}%`;
+      }
+    }
+
+    function packetKey(bytes) {
+      // 最初の 4 byte (ESI/SBN) を識別子に
+      return `${bytes[0]}_${bytes[1]}_${bytes[2]}_${bytes[3]}`;
+    }
+
+    /**
+     * sender.html が付けたメタデータヘッダを剥がして、本体ペイロードを返す。
+     * 形式: [4 byte BE: header JSON length] [header JSON UTF-8] [body]
+     * 互換性のため、ヘッダ JSON のパースに失敗したら全体を生 payload として扱う。
+     */
+    function unwrapPayload(payloadBytes) {
+      if (payloadBytes.length < 4) return { name: "received_payload.bin", type: "application/octet-stream", body: payloadBytes };
+      const view = new DataView(payloadBytes.buffer, payloadBytes.byteOffset, payloadBytes.byteLength);
+      const headerLen = view.getUint32(0, false);
+      if (headerLen <= 0 || headerLen > 4096 || 4 + headerLen > payloadBytes.length) {
+        return { name: "received_payload.bin", type: "application/octet-stream", body: payloadBytes };
+      }
+      try {
+        const headerStr = new TextDecoder().decode(payloadBytes.slice(4, 4 + headerLen));
+        const meta = JSON.parse(headerStr);
+        const body = payloadBytes.slice(4 + headerLen);
+        return {
+          name: meta.name || "received_payload.bin",
+          type: meta.type || "application/octet-stream",
+          body,
+        };
+      } catch (e) {
+        return { name: "received_payload.bin", type: "application/octet-stream", body: payloadBytes };
+      }
+    }
+
+    function showResult(payloadBytes) {
+      const { name, type, body } = unwrapPayload(payloadBytes);
+
+      // プレビュー: テキストなら表示、画像なら画像表示、それ以外は hex
+      const previewEl = $("resultPreview");
+      previewEl.textContent = "";
+      const isImage = type.startsWith("image/");
+      const isText = type.startsWith("text/") || type === "application/json";
+
+      if (isImage) {
+        const blob = new Blob([body], { type });
+        const url = URL.createObjectURL(blob);
+        const img = document.createElement("img");
+        img.src = url;
+        img.style.maxWidth = "100%";
+        img.style.maxHeight = "300px";
+        previewEl.appendChild(img);
+        previewEl.appendChild(document.createElement("br"));
+        previewEl.appendChild(document.createTextNode(`${name} (${body.length}B, ${type})`));
+      } else if (isText) {
+        let txt = new TextDecoder().decode(body.slice(0, 1024));
+        if (body.length > 1024) txt += `\n... (+${body.length - 1024}B)`;
+        previewEl.textContent = `${name} (${body.length}B):\n\n${txt}`;
+      } else {
+        let hex = `${name} (${body.length}B, ${type}):\n`;
+        const limit = Math.min(256, body.length);
+        for (let i = 0; i < limit; i += 16) {
+          const row = Array.from(body.slice(i, i + 16))
+            .map(b => b.toString(16).padStart(2, "0")).join(" ");
+          hex += row + "\n";
+        }
+        if (body.length > limit) hex += `... (+${body.length - limit}B)`;
+        previewEl.textContent = hex;
+      }
+
+      const blob = new Blob([body], { type });
+      const url = URL.createObjectURL(blob);
+      const link = $("downloadLink");
+      link.href = url;
+      link.download = name;
+      link.textContent = `${name} をダウンロード (${body.length}B)`;
+      result.style.display = "block";
+    }
+
+    function scanFrame() {
+      if (!stream) return;
+      totalAttempts++;
+      const vw = video.videoWidth;
+      const vh = video.videoHeight;
+      if (vw === 0 || vh === 0) {
+        scanLoop = requestAnimationFrame(scanFrame);
+        return;
+      }
+      const cropSize = Math.min(vw, vh);
+      const cropX = Math.floor((vw - cropSize) / 2);
+      const cropY = Math.floor((vh - cropSize) / 2);
+      const targetSize = 640; // jsQR は cropSize より小さくして高速化
+      captureCanvas.width = targetSize;
+      captureCanvas.height = targetSize;
+      const ctx = captureCanvas.getContext("2d", { willReadFrequently: true });
+      ctx.drawImage(video, cropX, cropY, cropSize, cropSize, 0, 0, targetSize, targetSize);
+      const imgData = ctx.getImageData(0, 0, targetSize, targetSize);
+
+      const code = jsQR(imgData.data, imgData.width, imgData.height, {
+        inversionAttempts: "dontInvert",
+      });
+
+      if (code && code.binaryData) {
+        successfulDecodes++;
+        const bytes = new Uint8Array(code.binaryData);
+        if (bytes.length < 16) {
+          // 短すぎ
+        } else {
+          const oti = bytes.slice(0, 12);
+          const packet = bytes.slice(12);
+          const otiHex = Array.from(oti).map(b => b.toString(16).padStart(2, "0")).join("");
+          if (!decoder) {
+            try {
+              decoder = new FountainDecoder(oti);
+              lastOtiHex = otiHex;
+              out(`[init decoder] OTI=${otiHex}, payload size=${decoder.payloadSize()}B`, "ok");
+            } catch (e) {
+              out(`[error] decoder init failed: ${e.message || e}`, "ng");
+            }
+          }
+          if (decoder) {
+            const key = packetKey(packet);
+            if (!uniquePackets.has(key)) {
+              uniquePackets.add(key);
+              try {
+                const done = decoder.addPacket(packet);
+                if (done) {
+                  payload = decoder.payload();
+                  out(`[recovered] ${payload.length}B in ${successfulDecodes} QR reads`, "ok");
+                  showResult(payload);
+                  stop();
+                  return;
+                }
+              } catch (e) {
+                out(`[error] addPacket: ${e.message || e}`, "ng");
+              }
+            }
+          }
+        }
+      }
+      updateProgress();
+      scanLoop = requestAnimationFrame(scanFrame);
+    }
+
+    async function sendLog() {
+      try {
+        const text = Array.from(log.children).map(d => d.textContent).join("\n");
+        const meta = `=== ${new Date().toISOString()} ===\nUA: ${navigator.userAgent}\nframes: ${totalAttempts}, detects: ${successfulDecodes}, unique packets: ${uniquePackets.size}\n=== log ===\n`;
+        const res = await fetch("/log", {
+          method: "POST",
+          headers: { "Content-Type": "text/plain" },
+          body: meta + text,
+        });
+        out(`[send] ${res.status} ${res.ok ? "OK" : "FAIL"}`, res.ok ? "ok" : "ng");
+      } catch (e) {
+        out(`[send] error: ${e.message || e}`, "ng");
+      }
+    }
+
+    $("startBtn").addEventListener("click", () => startCamera());
+    $("stopBtn").addEventListener("click", stop);
+    $("sendLogBtn").addEventListener("click", sendLog);
+
+    out("[init] click \"カメラ開始\" to begin", "info");
+  </script>
+</body>
+</html>

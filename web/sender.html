@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>beyond-qr Sender</title>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+  <style>
+    body { font-family: sans-serif; margin: 0; background: #fff; color: #222; }
+    .toolbar {
+      padding: 0.5em 1em; border-bottom: 1px solid #ccc;
+      display: flex; gap: 0.5em; align-items: center; flex-wrap: wrap;
+    }
+    .toolbar input, .toolbar button {
+      padding: 0.4em 0.8em; font-size: 0.95em;
+    }
+    .toolbar textarea {
+      width: 320px; height: 60px; font-family: monospace; font-size: 0.85em;
+    }
+    button { background: #fc4; border: none; border-radius: 4px; cursor: pointer; }
+    button.secondary { background: #ddd; }
+    button:disabled { background: #eee; color: #888; cursor: not-allowed; }
+    .stage {
+      display: flex; justify-content: center; align-items: center;
+      padding: 2vmin; background: #fff;
+    }
+    #qrCanvas {
+      width: min(80vw, 80vh); height: min(80vw, 80vh);
+      image-rendering: pixelated; background: #fff;
+    }
+    .status {
+      position: fixed; bottom: 0; left: 0; right: 0;
+      padding: 0.3em 1em; background: #f0f0f0; border-top: 1px solid #ccc;
+      font-family: monospace; font-size: 0.85em;
+    }
+    .help {
+      max-width: 800px; margin: 0 auto; padding: 1em; font-size: 0.9em; color: #555;
+    }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <textarea id="payloadText" placeholder="ペイロード (テキスト入力 or ファイル選択)"></textarea>
+    <input type="file" id="payloadFile">
+    <label>FPS: <input type="number" id="fps" value="15" min="1" max="60" style="width: 60px"></label>
+    <label>EC: <select id="ecLevel">
+      <option value="L">L (高容量)</option>
+      <option value="M">M</option>
+      <option value="Q">Q</option>
+      <option value="H" selected>H (高訂正)</option>
+    </select></label>
+    <label>QR Ver: <input type="number" id="qrVersion" value="25" min="10" max="40" style="width: 60px"></label>
+    <button id="startBtn">送信開始</button>
+    <button id="stopBtn" class="secondary" disabled>停止</button>
+  </div>
+  <div class="stage">
+    <canvas id="qrCanvas" width="800" height="800"></canvas>
+  </div>
+  <div class="help">
+    <strong>使い方:</strong> 上欄にペイロードを入力 (or ファイル選択) → 「送信開始」→ F11 で全画面化 → スマホで receiver を開いてカメラを画面に向ける。
+    白背景なので画像周りの quiet zone が自動で確保される。
+  </div>
+  <div class="status" id="status">準備完了</div>
+
+  <script type="module">
+    import init, { FountainEncoder } from "./pkg/beyond_qr_core_wasm.js";
+
+    const $ = (id) => document.getElementById(id);
+    const canvas = $("qrCanvas");
+    const ctx = canvas.getContext("2d");
+    const status = $("status");
+
+    let encoder = null;
+    let frameIdx = 0;
+    let timer = null;
+    let otiBytes = null;
+    let packetSize = 500;
+
+    function setStatus(msg) {
+      status.textContent = msg;
+    }
+
+    // メタデータ (ファイル名 + MIME) をペイロード先頭に埋め込む。
+    // 形式: [4 byte BE: header JSON length N] [N byte UTF-8 JSON] [actual payload]
+    function wrapPayload(name, mimeType, body) {
+      const headerObj = { name, type: mimeType, size: body.length };
+      const headerStr = JSON.stringify(headerObj);
+      const headerBytes = new TextEncoder().encode(headerStr);
+      const out = new Uint8Array(4 + headerBytes.length + body.length);
+      const view = new DataView(out.buffer);
+      view.setUint32(0, headerBytes.length, false);
+      out.set(headerBytes, 4);
+      out.set(body, 4 + headerBytes.length);
+      return out;
+    }
+
+    async function getPayload() {
+      const fileInput = $("payloadFile");
+      if (fileInput.files.length > 0) {
+        const f = fileInput.files[0];
+        const body = new Uint8Array(await f.arrayBuffer());
+        return wrapPayload(f.name, f.type || "application/octet-stream", body);
+      }
+      const text = $("payloadText").value;
+      const body = new TextEncoder().encode(text);
+      return wrapPayload("message.txt", "text/plain;charset=utf-8", body);
+    }
+
+    function bytesToBinaryString(bytes) {
+      // qrcode-generator の default モードでは char code の下位 8 bit が byte として扱われる
+      let s = "";
+      for (let i = 0; i < bytes.length; i++) {
+        s += String.fromCharCode(bytes[i]);
+      }
+      return s;
+    }
+
+    function drawQR(qr) {
+      const modules = qr.getModuleCount();
+      const size = Math.min(canvas.width, canvas.height);
+      const cellSize = Math.floor(size / (modules + 2)); // 1 セル分の余白
+      const offset = Math.floor((size - cellSize * modules) / 2);
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = "#000";
+      for (let r = 0; r < modules; r++) {
+        for (let c = 0; c < modules; c++) {
+          if (qr.isDark(r, c)) {
+            ctx.fillRect(offset + c * cellSize, offset + r * cellSize, cellSize, cellSize);
+          }
+        }
+      }
+    }
+
+    function buildQR(data, version, ecLevel) {
+      const qr = qrcode(version, ecLevel);
+      qr.addData(bytesToBinaryString(data), "Byte");
+      qr.make();
+      return qr;
+    }
+
+    function renderFrame() {
+      if (!encoder) return;
+      const totalPackets = encoder.packetCount();
+      const packet = encoder.packet(frameIdx % totalPackets);
+      // 各 QR に OTI を埋め込む (受信側がいつでも復号開始できる)
+      const data = new Uint8Array(12 + packet.length);
+      data.set(otiBytes, 0);
+      data.set(packet, 12);
+      const version = parseInt($("qrVersion").value);
+      const ecLevel = $("ecLevel").value;
+      try {
+        const qr = buildQR(data, version, ecLevel);
+        drawQR(qr);
+        setStatus(`frame ${frameIdx + 1} | packet ${frameIdx % totalPackets} / ${totalPackets} | QR size ${qr.getModuleCount()} modules`);
+      } catch (e) {
+        setStatus(`QR 生成失敗 (パケットが QR 容量を超えた可能性): ${e.message}`);
+        stop();
+        return;
+      }
+      frameIdx++;
+    }
+
+    async function start() {
+      await init();
+      const payload = await getPayload();
+      if (payload.length === 0) {
+        setStatus("ペイロードが空です");
+        return;
+      }
+      encoder = new FountainEncoder(payload, packetSize, Math.ceil(payload.length / packetSize * 0.5));
+      otiBytes = encoder.otiBytes();
+      frameIdx = 0;
+      $("startBtn").disabled = true;
+      $("stopBtn").disabled = false;
+      const fps = parseInt($("fps").value);
+      setStatus(`payload ${payload.length}B → ${encoder.packetCount()} packets, OTI=${Array.from(otiBytes).map(b=>b.toString(16).padStart(2,"0")).join("")}`);
+      renderFrame();
+      timer = setInterval(renderFrame, 1000 / fps);
+    }
+
+    function stop() {
+      if (timer) clearInterval(timer);
+      timer = null;
+      $("startBtn").disabled = false;
+      $("stopBtn").disabled = true;
+    }
+
+    $("startBtn").addEventListener("click", () => start().catch(e => setStatus(`error: ${e.message}`)));
+    $("stopBtn").addEventListener("click", stop);
+  </script>
+</body>
+</html>

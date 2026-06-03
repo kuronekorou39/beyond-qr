@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>beyond-qr quiet zone simulation</title>
+  <style>
+    body { font-family: sans-serif; margin: 2em; background: #111; color: #eee; }
+    .ok { color: #6c6; }
+    .ng { color: #f66; }
+    canvas { border: 1px solid #444; max-width: 384px; image-rendering: pixelated; }
+  </style>
+</head>
+<body>
+  <h1>beyond-qr quiet zone simulation</h1>
+  <p>frame.png を 1024×1024 の白キャンバスの中央に 70% スケールで描画して、
+     スマホカメラで display.html を撮影した状況をシミュレートする。</p>
+  <div id="log"></div>
+  <canvas id="cv"></canvas>
+
+  <script type="module">
+    import init, { decode } from "./pkg/beyond_qr_core_wasm.js";
+    import { decodeImageToCells, findFinderCenters, PHASE_0_SPEC } from "./algo.js";
+
+    const log = document.getElementById("log");
+    const out = (msg, cls = "") => {
+      const div = document.createElement("div");
+      div.className = cls;
+      div.textContent = msg;
+      log.appendChild(div);
+    };
+
+    async function loadImage(url) {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      await new Promise((r, j) => { img.onload = r; img.onerror = j; img.src = url; });
+      return img;
+    }
+
+    async function runScale(scaleRatio) {
+      const cv = document.getElementById("cv");
+      cv.width = 1024;
+      cv.height = 1024;
+      const ctx = cv.getContext("2d");
+      // 白で塗りつぶし (display.html の quiet zone)
+      ctx.fillStyle = "white";
+      ctx.fillRect(0, 0, 1024, 1024);
+      // frame.png を中央に scaleRatio で描画
+      const img = await loadImage("./samples/frame.png");
+      const drawSize = 1024 * scaleRatio;
+      const offset = (1024 - drawSize) / 2;
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(img, offset, offset, drawSize, drawSize);
+
+      const data = ctx.getImageData(0, 0, 1024, 1024).data;
+      const rgb = new Uint8Array(1024 * 1024 * 3);
+      for (let i = 0, j = 0; i < data.length; i += 4, j += 3) {
+        rgb[j] = data[i];
+        rgb[j + 1] = data[i + 1];
+        rgb[j + 2] = data[i + 2];
+      }
+
+      const spec = PHASE_0_SPEC;
+      const observed = findFinderCenters(rgb, 1024, 1024, spec.finderSize, spec.cellPx);
+      out(`scale=${(scaleRatio * 100).toFixed(0)}% finders: ${observed.map(([x,y]) => `(${x},${y})`).join(" ")}`);
+
+      const cells = decodeImageToCells(rgb, 1024, 1024, spec);
+      try {
+        const payload = decode(
+          cells, spec.gridWidth, spec.gridHeight, spec.cellPx,
+          spec.finderSize, spec.calibrationRowStart, spec.calibrationRows
+        );
+        const expectedRes = await fetch("./samples/input.bin");
+        const expected = new Uint8Array(await expectedRes.arrayBuffer());
+        const equal = payload.length === expected.length && payload.every((v, i) => v === expected[i]);
+        out(`  decode: ${payload.length}B, byte-exact=${equal}`, equal ? "ok" : "ng");
+      } catch (e) {
+        out(`  decode FAIL: ${e.message || e}`, "ng");
+      }
+    }
+
+    async function main() {
+      await init();
+      out("[init] WASM loaded");
+      // 様々なスケールで試す
+      for (const s of [1.0, 0.9, 0.8, 0.75, 0.7, 0.6, 0.5, 0.4]) {
+        await runScale(s);
+      }
+    }
+
+    main().catch(e => out(`[error] ${e}`, "ng"));
+  </script>
+</body>
+</html>

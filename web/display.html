@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>beyond-qr Display (PC 側)</title>
+  <style>
+    html, body { margin: 0; padding: 0; height: 100vh; width: 100vw; }
+    body {
+      /* 重要: 画像の周りは白の quiet zone。これでスマホカメラから見て
+         ファインダーの外側が確実に白になり、検出器の「中心暗+外側白」
+         スコアが取れるようになる。QR コードの 4 モジュール幅の quiet zone と同じ。*/
+      background: #fff;
+      display: flex; align-items: center; justify-content: center;
+    }
+    img {
+      /* 表示サイズは画面の短辺の 75% にして、画像の周りに約 12.5% ずつ余白 (quiet zone) を確保 */
+      width: min(75vh, 75vw);
+      height: min(75vh, 75vw);
+      object-fit: contain;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
+    .hint {
+      position: fixed; bottom: 8px; left: 8px;
+      color: #888; font-family: sans-serif; font-size: 12px;
+      background: rgba(255,255,255,0.7); padding: 2px 6px; border-radius: 3px;
+    }
+  </style>
+</head>
+<body>
+  <img src="./samples/frame.png" alt="encoded frame">
+  <div class="hint">白背景 + 75% サイズで quiet zone を確保。F11 で全画面、Esc で解除</div>
+</body>
+</html>
