@@ -1,21 +1,25 @@
-# beyond-qr web (Phase 0e: スマホブラウザ実機テスト)
+# beyond-qr web (Phase 1: QR + Fountain code 動画ループ)
 
-PC 画面に表示した beyond-qr フレームを、**スマホ Chrome / Safari** のカメラで読み取って
-復号する Web アプリ。Rust core は WASM 化、画像処理は JS で実装。
+PC 画面に **QR の動画ループ** を表示し、**スマホ Chrome / Safari** のカメラで連続スキャンして
+ファイル/テキストを復元する Web アプリ。Rust の Fountain code (RaptorQ) を WASM 化し、
+QR 生成は qrcode-generator、QR 読み取りは jsQR (いずれも CDN) で行う。
+
+仕組み: 送信側はペイロードを Fountain パケット列に符号化し、各パケットを
+`[12 byte OTI][packet]` の QR にして循環表示する。受信側はカメラで QR を読み続け、
+OTI でデコーダを初期化し、重複を除きつつパケットが十分集まった時点で元データを復元する。
+カメラ位置やフレーム落ちに強く、1 枚も取りこぼさずに撮る必要はない。
 
 ## ファイル構成
 
 ```
 web/
-├── index.html         # スマホ側受信 UI (カメラ → 撮影 → 復号 → 表示)
-├── display.html       # PC 側送信 UI (frame.png を全画面表示)
-├── algo.js            # JS 画像処理 (find finder / perspective unwarp / calibration / OKLab)
-├── pkg/               # wasm-pack 出力 (core-wasm)
-├── samples/           # テスト用フレーム
-├── certs/             # 自己署名証明書 (初回起動時に自動生成)
+├── sender.html        # PC 側送信 UI (ペイロード → Fountain → QR 動画ループ)
+├── receiver.html      # スマホ側受信 UI (カメラ連続スキャン → jsQR → Fountain 復元)
+├── test_phase1.html   # PC 単体の往復テスト (カメラ不要: encode→QR→jsQR→decode)
+├── pkg/               # wasm-pack 出力 (core-wasm。要ビルド、git 管理外)
+├── certs/             # 自己署名証明書 (初回起動時に自動生成、git 管理外)
 ├── serve_https.py     # 開発用 HTTPS サーバー
-├── test_wasm.html     # WASM 単体テスト (PC ブラウザでアクセス)
-├── test_algo.html     # JS 画像処理 + WASM 復号テスト (frame.png を fetch)
+├── manifest.json      # PWA マニフェスト (start_url = receiver.html)
 └── README.md          # 本ファイル
 ```
 
@@ -28,17 +32,7 @@ cd C:\projects\beyond-qr\core-wasm
 wasm-pack build --target web --release --out-dir ..\web\pkg
 ```
 
-### 2. サンプル PNG 生成 (一度のみ)
-
-```powershell
-cd C:\projects\beyond-qr
-.\.venv\Scripts\python.exe -m beyond_qr_sender.encode samples\input.bin -o samples\frame.png
-# web/samples/ にコピー
-Copy-Item samples\frame.png web\samples\frame.png -Force
-Copy-Item samples\input.bin web\samples\input.bin -Force
-```
-
-### 3. ファイアウォール許可 (初回のみ、管理者 PowerShell)
+### 2. ファイアウォール許可 (初回のみ、管理者 PowerShell)
 
 ```powershell
 New-NetFirewallRule -DisplayName "beyond-qr HTTPS 8443" -Direction Inbound -Protocol TCP -LocalPort 8443 -Action Allow -Profile Private
@@ -46,24 +40,30 @@ New-NetFirewallRule -DisplayName "beyond-qr HTTPS 8443" -Direction Inbound -Prot
 
 (または Python の最初の起動時に Windows のポップアップで「アクセスを許可」を選ぶ)
 
-### 4. HTTPS サーバー起動
+### 3. HTTPS サーバー起動
 
 ```powershell
-.\.venv\Scripts\python.exe web\serve_https.py
+python web\serve_https.py
 ```
 
-初回起動時に `web/certs/` 配下に自己署名証明書を自動生成する。
+初回起動時に `web/certs/` 配下へ自己署名証明書を自動生成する (LAN IP を SAN に注入)。
+カメラ API (getUserMedia) は HTTPS が必須のため、平文 HTTP では動かない。
 
-### 5. PC 側で送信フレーム表示
+### 4. PC 側で送信
 
-PC ブラウザで `https://localhost:8443/display.html` を開き、F11 で全画面表示。
+PC ブラウザで `https://localhost:8443/sender.html` を開く:
 
-### 6. スマホでアクセス
+1. テキストを入力、またはファイルを選択
+2. (任意) FPS / EC レベル / QR バージョンを調整
+3. 「送信開始」→ QR が動画ループ表示される
+4. F11 で全画面化 (白背景なので画像周りの quiet zone が自動確保される)
 
-スマホを **PC と同じ Wi-Fi に接続**。スマホ Chrome で以下を開く:
+### 5. スマホで受信
+
+スマホを **PC と同じ Wi-Fi に接続**し、スマホ Chrome で開く:
 
 ```
-https://<PC の IP>:8443/index.html
+https://<PC の IP>:8443/receiver.html
 ```
 
 (IP はサーバー起動時にコンソールに表示される。例: `https://192.168.11.52:8443/`)
@@ -71,24 +71,25 @@ https://<PC の IP>:8443/index.html
 **証明書警告**: 「詳細設定」→「<host> にアクセスする (安全ではありません)」を選択。
 自己署名証明書なので警告が出るのは正常。
 
-### 7. 撮影と復号
+1. 「カメラ開始」をタップ → カメラ許可 (背面カメラ)
+2. PC 画面の QR 動画にスマホをかざす
+3. パケットが集まると自動で復元され、画像/テキスト/hex プレビューと
+   ダウンロードリンクが表示される
 
-1. スマホ画面の「カメラ開始」をタップ → カメラ許可
-2. 背面カメラのプレビュー表示 (環境光モード)
-3. PC 画面 (全画面表示中の frame.png) にスマホをかざす
-4. 黄色の枠内に画像を収める
-5. 「撮影 & 復号」をタップ
-6. 結果ペイロードが画面下部に表示される
+## 動作確認 (カメラ不要)
+
+`https://localhost:8443/test_phase1.html` を PC ブラウザで開くと、
+encode→QR→jsQR→decode の往復を画面内で検証できる。
 
 ## トラブルシューティング
 
-- **カメラ起動エラー** → HTTPS 経由でアクセスしているか確認 (HTTP では getUserMedia 不可)
-- **WASM 読み込み失敗** → pkg/ が web/ 下に正しくビルドされているか確認
-- **復号失敗 (Decode failure)** → 撮影距離が遠すぎる / 手ぶれ / 反射光、画面のオートブライトネスを切る
+- **カメラ起動エラー** → HTTPS 経由か確認 (HTTP では getUserMedia 不可)
+- **WASM 読み込み失敗** → `pkg/` が web/ 下に正しくビルドされているか確認 (手順 1)
+- **なかなか復元しない** → QR バージョンを下げる / FPS を下げる / 撮影距離・手ぶれ・反射を調整、画面のオートブライトネスを切る
 - **接続できない** → ファイアウォール許可、PC と同じ Wi-Fi、IP アドレスが合っているか
 
-## 既知の制限 (Phase 0e 時点)
+## 補足
 
-- 静止 1 フレームのみ復号。動画ストリーム (Phase 1) は未実装
-- 4 隅のファインダーが画像内にすべて収まる必要がある
-- 極端な暗所・極端な反射では復号失敗する (撮影条件に依存)
+- `serve_https.py` は開発専用 (CORS 全開放・0.0.0.0 待受・no-cache)。本番用途には使わない。
+- `POST /log`・`POST /capture` の診断エンドポイントを持ち、受信側のログ/キャプチャを
+  `web/client_logs/` (git 管理外) に保存できる。

@@ -1,5 +1,5 @@
 [workspace]
-members = ["core", "core-py", "core-ffi", "core-wasm", "fountain"]
+members = ["core-wasm", "fountain"]
 resolver = "2"
 
 [workspace.package]
@@ -7,5 +7,8 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
-[workspace.dependencies]
-reed-solomon = "0.2"
+# wasm バイナリを最小化 (core-wasm の release ビルド向け)。
+# ワークスペース直下に置かないと非 root パッケージのプロファイルは無視される。
+[profile.release]
+opt-level = "z"
+lto = true
