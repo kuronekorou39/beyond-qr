@@ -18,9 +18,11 @@ from __future__ import annotations
 import argparse
 import http.server
 import ipaddress
+import json
 import socket
 import ssl
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -102,9 +104,16 @@ def make_self_signed_cert(ips: list[str]) -> None:
 
 LOG_DIR = Path(__file__).parent / "client_logs"
 
+# 送受信間の簡易バックチャネル (同一 LAN 前提の開発用ブラックボード)。
+# 受信側が読み取り状況を POST /state/receiver、送信側が設定を POST /state/sender、
+# 双方が GET /state で互いの状態を取得し、表示設定の助言・適応調整に使う。
+# HTTPServer は単一スレッドで逐次処理されるためロック不要。
+_STATE: dict[str, dict] = {"sender": {}, "receiver": {}}
+MAX_BODY = 16 * 1024 * 1024  # POST ボディ上限 (capture の PNG を許容しつつ暴走を防ぐ)
+
 
 class Handler(http.server.SimpleHTTPRequestHandler):
-    """no-cache + POST /log + POST /capture エンドポイントを提供する。"""
+    """no-cache + POST /log,/capture,/state/* + GET /state エンドポイントを提供する。"""
 
     def end_headers(self) -> None:
         # 開発用: ブラウザキャッシュ無効化
@@ -119,16 +128,58 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_response(204)
         self.end_headers()
 
+    def log_message(self, fmt, *args) -> None:  # noqa: A003
+        # 高頻度な /state ポーリングはログに出さない (本当に見たい log/capture/cert が埋もれるのを防ぐ)
+        if self.path.startswith("/state"):
+            return
+        super().log_message(fmt, *args)
+
+    def _content_length(self) -> int:
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            return 0
+        return max(0, min(n, MAX_BODY))
+
+    def do_GET(self) -> None:  # noqa: N802
+        if self.path == "/state":
+            body = json.dumps({**_STATE, "now": time.time()}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        super().do_GET()
+
     def do_POST(self) -> None:  # noqa: N802
         if self.path == "/log":
             self._handle_log()
         elif self.path == "/capture":
             self._handle_capture()
+        elif self.path == "/state/sender":
+            self._handle_state("sender")
+        elif self.path == "/state/receiver":
+            self._handle_state("receiver")
         else:
             self.send_error(404, "endpoint not found")
 
+    def _handle_state(self, which: str) -> None:
+        raw = self.rfile.read(self._content_length()).decode("utf-8", errors="replace")
+        try:
+            data = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            data = {}
+        if not isinstance(data, dict):  # 配列/スカラを POST されても落ちない
+            data = {}
+        data["_ts"] = time.time()
+        _STATE[which] = data
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"OK")
+
     def _handle_log(self) -> None:
-        length = int(self.headers.get("Content-Length", "0"))
+        length = self._content_length()
         body = self.rfile.read(length).decode("utf-8", errors="replace")
         LOG_DIR.mkdir(exist_ok=True)
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -142,7 +193,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _handle_capture(self) -> None:
         """キャプチャ画像 (PNG base64) を受け取って保存。クライアントが decode 失敗時に診断用に送る。"""
-        length = int(self.headers.get("Content-Length", "0"))
+        length = self._content_length()
         body = self.rfile.read(length).decode("utf-8", errors="replace")
         LOG_DIR.mkdir(exist_ok=True)
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")

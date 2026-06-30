@@ -24,7 +24,7 @@
       background: #000; border: 1px solid #444; overflow: hidden;
     }
     video, canvas { width: 100%; height: 100%; object-fit: cover; display: block; }
-    .controls { display: flex; gap: 0.5em; justify-content: center; flex-wrap: wrap; }
+    .controls { display: flex; gap: 0.5em; justify-content: center; flex-wrap: wrap; align-items: center; }
     button {
       background: #fc4; color: #111; border: none; padding: 0.6em 1.2em;
       font-size: 1em; font-weight: bold; border-radius: 4px;
@@ -32,11 +32,15 @@
     }
     button:disabled { background: #555; color: #888; }
     button.secondary { background: #444; color: #eee; }
-    .progress {
+    .controls label { font-size: 0.85em; color: #bbb; }
+    .controls input { width: 3em; }
+    .panel {
       max-width: 480px; align-self: center; width: 100%;
       background: #1a1a1a; padding: 0.6em 0.8em; border-radius: 4px;
       font-family: monospace; font-size: 0.9em;
     }
+    #timing { white-space: pre-wrap; line-height: 1.4; }
+    #timing .hi { color: #6c6; }
     .progress-bar {
       height: 6px; background: #333; border-radius: 3px; margin-top: 4px;
       overflow: hidden;
@@ -80,8 +84,18 @@
       <button id="startBtn">カメラ開始</button>
       <button id="stopBtn" class="secondary" disabled>停止</button>
       <button id="sendLogBtn" class="secondary" disabled>ログ送信</button>
+      <label>グリッド: <select id="grid">
+        <option value="1x1" selected>1×1</option>
+        <option value="1x2">1×2</option>
+        <option value="2x2">2×2</option>
+        <option value="2x3">2×3</option>
+        <option value="3x3">3×3</option>
+      </select></label>
+      <label><input type="checkbox" id="followSender" checked> 送信側に追従</label>
     </div>
-    <div class="progress" id="progress">
+    <div class="panel" id="senderInfo">送信側: 未検出</div>
+    <div class="panel" id="timing">待機中</div>
+    <div class="panel" id="progress">
       <div>待機中</div>
       <div class="progress-bar"><div id="progressBar" style="width: 0%"></div></div>
     </div>
@@ -95,6 +109,7 @@
 
   <script type="module">
     import init, { FountainDecoder } from "./pkg/beyond_qr_core_wasm.js";
+    import { detectQRCodesGrid } from "./qr_util.js";
 
     const $ = (id) => document.getElementById(id);
     const log = $("log");
@@ -102,6 +117,7 @@
     const captureCanvas = $("captureCanvas");
     const progressEl = $("progress");
     const progressBar = $("progressBar");
+    const timingEl = $("timing");
     const result = $("result");
 
     const out = (msg, cls = "info") => {
@@ -116,13 +132,88 @@
     let decoder = null;
     let scanLoop = null;
     let uniquePackets = new Set();   // ESI 等で重複検知
-    let totalAttempts = 0;
-    let successfulDecodes = 0;
+    let totalAttempts = 0;           // 走査したフレーム数
+    let successfulDecodes = 0;       // 読めた QR の総数 (重複込み)
     let payload = null;
     let lastOtiHex = null;
+    // タイミング (比較用)。performance.now() = 経過計測、Date = 時刻表示。
+    let cameraStartTs = null, cameraStartClock = null;
+    let firstPacketTs = null, firstPacketClock = null;
+    let doneTs = null, doneClock = null;
+    // バックチャネル / 送信側追従用
+    let statePollTimer = null, statePostTimer = null;
+    let senderGrid = null, senderFps = null;   // 送信側の現在設定 (/state より)
+    let effectiveGrid = "1x1";                 // 実際にタイル分割に使うグリッド
+    let winFrames = 0, winReads = 0;           // 直近ウィンドウの reads/frame 集計
+    let settlingUntil = 0;                     // 再同期直後の過渡期 (送信側に効率評価させない)
+    let senderTotalPackets = 0, senderPacketSize = 0; // 進捗見積り用 (/state より)
+    let senderProbing = false;                 // 送信側がプローブ中 (復号せず読取率だけ測る)
+    let lastWinResetTs = 0;                    // scanFps 計測用 (ウィンドウ開始時刻)
+    let lastProbeGrid = null;                  // プローブ中のグリッド変化検出用
+    let wakeLock = null;                       // 画面減光で rAF が間引かれるのを防ぐ
+
+    function resetState() {
+      decoder = null;
+      uniquePackets = new Set();
+      totalAttempts = 0;
+      successfulDecodes = 0;
+      payload = null;
+      lastOtiHex = null;
+      cameraStartTs = cameraStartClock = null;
+      firstPacketTs = firstPacketClock = null;
+      doneTs = doneClock = null;
+      result.style.display = "none";
+      progressBar.style.width = "0%";
+      senderGrid = senderFps = null;
+      senderTotalPackets = senderPacketSize = 0;
+      senderProbing = false;
+      winFrames = 0; winReads = 0;
+      settlingUntil = 0;
+      lastWinResetTs = 0;
+      lastProbeGrid = null;
+    }
+
+    async function requestWakeLock() {
+      try { if ("wakeLock" in navigator) wakeLock = await navigator.wakeLock.request("screen"); } catch (e) { /* 非対応/失敗は無視 */ }
+    }
+    function releaseWakeLock() {
+      try { if (wakeLock) { wakeLock.release(); wakeLock = null; } } catch (e) { /* noop */ }
+    }
+
+    // プローブのダミー残骸を拾わないよう、復号状態を一度クリアして次の本番 OTI を待つ。
+    function clearForNewSession() {
+      decoder = null;
+      uniquePackets = new Set();
+      payload = null;
+      firstPacketTs = firstPacketClock = null;
+      doneTs = doneClock = null;
+      lastOtiHex = null;
+      result.style.display = "none";
+      progressBar.style.width = "0%";
+      winFrames = 0; winReads = 0;
+      lastWinResetTs = performance.now();
+      lastProbeGrid = null;
+      out("[probe終了] 本番送信待ち", "info");
+    }
+
+    // 送信側が設定 (OTI) を変えたとき、カメラは止めずに復号だけやり直す。
+    function resyncDecode(newOtiHex) {
+      decoder = null;
+      uniquePackets = new Set();
+      payload = null;
+      firstPacketTs = firstPacketClock = null;
+      doneTs = doneClock = null;
+      result.style.display = "none";
+      progressBar.style.width = "0%";
+      winFrames = 0; winReads = 0;               // reads 窓を新セッションから測り直す
+      lastWinResetTs = performance.now();
+      settlingUntil = performance.now() + 1500;  // 過渡期は送信側に効率を評価させない
+      out(`[resync] 送信側の設定変更を検出 (OTI=${newOtiHex})。復号をやり直します`, "info");
+    }
 
     async function startCamera() {
       try {
+        resetState();              // 複数回計測できるよう毎回リセット
         await init();
         out("[init] WASM loaded");
         stream = await navigator.mediaDevices.getUserMedia({
@@ -131,11 +222,18 @@
         });
         video.srcObject = stream;
         await video.play();
+        cameraStartTs = performance.now();
+        cameraStartClock = new Date();
+        lastWinResetTs = performance.now();
+        requestWakeLock();
         out(`[camera] ${video.videoWidth}x${video.videoHeight} 起動`);
         $("startBtn").disabled = true;
         $("stopBtn").disabled = false;
         $("sendLogBtn").disabled = false;
         scanLoop = requestAnimationFrame(scanFrame);
+        statePollTimer = setInterval(pollState, 900);
+        statePostTimer = setInterval(postReceiverState, 900);
+        pollState();
       } catch (e) {
         out(`[error] camera: ${e.message}`, "ng");
       }
@@ -144,25 +242,53 @@
     function stop() {
       if (scanLoop) cancelAnimationFrame(scanLoop);
       scanLoop = null;
+      if (statePollTimer) { clearInterval(statePollTimer); statePollTimer = null; }
+      if (statePostTimer) { clearInterval(statePostTimer); statePostTimer = null; }
       if (stream) {
         stream.getTracks().forEach(t => t.stop());
         stream = null;
       }
+      releaseWakeLock();
       $("startBtn").disabled = false;
       $("stopBtn").disabled = true;
+      postReceiverState(); // 最終状態 (recovered/stopped) を送信側へ
     }
 
     function updateProgress() {
       const text = decoder
-        ? `OTI: ${lastOtiHex} | payload ${decoder.payloadSize()}B | unique packets: ${uniquePackets.size} (received ${decoder.packetsReceived()})`
+        ? `OTI: ${lastOtiHex} | payload ${decoder.payloadSize()}B | unique: ${uniquePackets.size} (QR読取 ${successfulDecodes}, frame ${totalAttempts})`
         : `frames scanned: ${totalAttempts} | QRs detected: ${successfulDecodes}`;
       progressEl.firstElementChild.textContent = text;
       if (decoder) {
         const payloadBytes = Number(decoder.payloadSize());
-        const estimatedSourcePackets = Math.ceil(payloadBytes / 500);
+        // 送信側のパケットサイズが分かれば正確に (グリッド連動で 500B 固定ではない)、無ければ 500B 仮定
+        const estimatedSourcePackets = Math.max(1, Math.ceil(payloadBytes / (senderPacketSize || 500)));
         const pct = Math.min(100, (uniquePackets.size / estimatedSourcePackets) * 100);
         progressBar.style.width = `${pct}%`;
       }
+    }
+
+    const fmtClock = (d) => d ? d.toLocaleTimeString("ja-JP", { hour12: false }) : "—";
+
+    function updateTiming() {
+      if (cameraStartTs === null) { timingEl.textContent = "待機中"; return; }
+      const nowOrDone = doneTs !== null ? doneTs : performance.now();
+      const sinceCam = (nowOrDone - cameraStartTs) / 1000;
+      let txt = `カメラ開始: ${fmtClock(cameraStartClock)}   (経過 ${sinceCam.toFixed(1)}s)\n`;
+      if (firstPacketTs !== null) {
+        const sinceFirst = (nowOrDone - firstPacketTs) / 1000;
+        txt += `最初のQR : ${fmtClock(firstPacketClock)}   (転送 ${sinceFirst.toFixed(1)}s)\n`;
+      } else {
+        txt += `最初のQR : —\n`;
+      }
+      if (doneTs !== null) {
+        const transfer = (doneTs - firstPacketTs) / 1000;
+        const total = (doneTs - cameraStartTs) / 1000;
+        const kbps = payload ? (payload.length / 1024) / Math.max(transfer, 0.001) : 0;
+        txt += `復元完了 : ${fmtClock(doneClock)}\n`;
+        txt += `▶ 転送 ${transfer.toFixed(2)}s / 総 ${total.toFixed(2)}s / ${kbps.toFixed(1)} KB/s`;
+      }
+      timingEl.textContent = txt;
     }
 
     function packetKey(bytes) {
@@ -199,15 +325,13 @@
     function showResult(payloadBytes) {
       const { name, type, body } = unwrapPayload(payloadBytes);
 
-      // プレビュー: テキストなら表示、画像なら画像表示、それ以外は hex
       const previewEl = $("resultPreview");
       previewEl.textContent = "";
       const isImage = type.startsWith("image/");
       const isText = type.startsWith("text/") || type === "application/json";
 
       if (isImage) {
-        const blob = new Blob([body], { type });
-        const url = URL.createObjectURL(blob);
+        const url = URL.createObjectURL(new Blob([body], { type }));
         const img = document.createElement("img");
         img.src = url;
         img.style.maxWidth = "100%";
@@ -231,8 +355,7 @@
         previewEl.textContent = hex;
       }
 
-      const blob = new Blob([body], { type });
-      const url = URL.createObjectURL(blob);
+      const url = URL.createObjectURL(new Blob([body], { type }));
       const link = $("downloadLink");
       link.href = url;
       link.download = name;
@@ -243,72 +366,161 @@
     function scanFrame() {
       if (!stream) return;
       totalAttempts++;
-      const vw = video.videoWidth;
-      const vh = video.videoHeight;
-      if (vw === 0 || vh === 0) {
-        scanLoop = requestAnimationFrame(scanFrame);
-        return;
-      }
+      const vw = video.videoWidth, vh = video.videoHeight;
+      if (vw === 0 || vh === 0) { scanLoop = requestAnimationFrame(scanFrame); return; }
+
       const cropSize = Math.min(vw, vh);
       const cropX = Math.floor((vw - cropSize) / 2);
       const cropY = Math.floor((vh - cropSize) / 2);
-      const targetSize = 640; // jsQR は cropSize より小さくして高速化
+      // 追従 ON かつ送信側を検出していればそのグリッド、無ければ手動選択
+      const gridStr = ((senderProbing || $("followSender").checked) && senderGrid) ? senderGrid : $("grid").value;
+      effectiveGrid = gridStr;
+      const [rows, cols] = gridStr.split("x").map(Number);
+      // グリッドが大きいほど高解像度に (1 タイルあたりの画素を確保)
+      const targetSize = Math.max(640, Math.min(1280, 480 * Math.max(rows, cols)));
       captureCanvas.width = targetSize;
       captureCanvas.height = targetSize;
       const ctx = captureCanvas.getContext("2d", { willReadFrequently: true });
       ctx.drawImage(video, cropX, cropY, cropSize, cropSize, 0, 0, targetSize, targetSize);
       const imgData = ctx.getImageData(0, 0, targetSize, targetSize);
 
-      const code = jsQR(imgData.data, imgData.width, imgData.height, {
-        inversionAttempts: "dontInvert",
-      });
+      const codes = detectQRCodesGrid(imgData, rows, cols);  // グリッドにタイル分割して各タイルを読む
+      winFrames++;
+      successfulDecodes += codes.length;
 
-      if (code && code.binaryData) {
-        successfulDecodes++;
-        const bytes = new Uint8Array(code.binaryData);
-        if (bytes.length < 16) {
-          // 短すぎ
+      if (senderProbing) {
+        // プローブ中: 復号せず読取率だけ測る (途中で止めない)
+        const [er, ec] = effectiveGrid.split("x").map(Number);
+        const reads = Math.min(codes.length, er * ec);   // セル数でクランプ (効率>100%を防止)
+        if (effectiveGrid !== lastProbeGrid) {            // グリッド切替時はウィンドウを測り直す (前設定の混入防止)
+          lastProbeGrid = effectiveGrid;
+          winFrames = 1; winReads = reads;
+          lastWinResetTs = performance.now();
         } else {
-          const oti = bytes.slice(0, 12);
-          const packet = bytes.slice(12);
-          const otiHex = Array.from(oti).map(b => b.toString(16).padStart(2, "0")).join("");
-          if (!decoder) {
-            try {
-              decoder = new FountainDecoder(oti);
-              lastOtiHex = otiHex;
-              out(`[init decoder] OTI=${otiHex}, payload size=${decoder.payloadSize()}B`, "ok");
-            } catch (e) {
-              out(`[error] decoder init failed: ${e.message || e}`, "ng");
-            }
-          }
-          if (decoder) {
-            const key = packetKey(packet);
-            if (!uniquePackets.has(key)) {
-              uniquePackets.add(key);
-              try {
-                const done = decoder.addPacket(packet);
-                if (done) {
-                  payload = decoder.payload();
-                  out(`[recovered] ${payload.length}B in ${successfulDecodes} QR reads`, "ok");
-                  showResult(payload);
-                  stop();
-                  return;
-                }
-              } catch (e) {
-                out(`[error] addPacket: ${e.message || e}`, "ng");
-              }
-            }
+          winReads += reads;
+        }
+        progressEl.firstElementChild.textContent = `📡 プローブ測定中: grid ${effectiveGrid} | ${codes.length} QR/frame`;
+        updateTiming();
+        scanLoop = requestAnimationFrame(scanFrame);
+        return;
+      }
+
+      // フレーム内の OTI ごとに分類 (グリッド変更の過渡期は新旧 OTI の QR が混在しうる)
+      const hex12 = (b) => Array.from(b.slice(0, 12)).map(x => x.toString(16).padStart(2, "0")).join("");
+      const parsed = [];
+      const otiCount = new Map();
+      for (const bytes of codes) {
+        if (bytes.length < 16) continue;
+        const otiHex = hex12(bytes);
+        parsed.push({ otiHex, oti: bytes.slice(0, 12), packet: bytes.slice(12) });
+        otiCount.set(otiHex, (otiCount.get(otiHex) || 0) + 1);
+      }
+      if (parsed.length) {
+        // このフレームで採用する OTI = 最多数派 (混在時に毎フレーム resync するバタつきを防ぐ)
+        let targetOti = lastOtiHex, best = -1;
+        for (const [o, n] of otiCount) if (n > best) { best = n; targetOti = o; }
+        if (decoder && targetOti !== lastOtiHex) resyncDecode(targetOti); // 送信側が設定変更 → やり直し
+        if (!decoder) {
+          const seed = parsed.find(p => p.otiHex === targetOti);
+          try {
+            decoder = new FountainDecoder(seed.oti);
+            lastOtiHex = targetOti;
+            out(`[init decoder] OTI=${targetOti}, payload size=${decoder.payloadSize()}B`, "ok");
+          } catch (e) {
+            out(`[error] decoder init failed: ${e.message || e}`, "ng");
           }
         }
+        // 採用 OTI のパケットだけを投入 (効率の母数 winReads も採用 OTI に揃える)
+        if (decoder) {
+          let targetReads = 0;
+          for (const p of parsed) {
+            if (p.otiHex !== lastOtiHex) continue;
+            targetReads++;
+            const key = packetKey(p.packet);
+            if (uniquePackets.has(key)) continue;
+            uniquePackets.add(key);
+            if (firstPacketTs === null) { firstPacketTs = performance.now(); firstPacketClock = new Date(); }
+            try {
+              const done = decoder.addPacket(p.packet);
+              if (done) {
+                payload = decoder.payload();
+                doneTs = performance.now();
+                doneClock = new Date();
+                out(`[recovered] ${payload.length}B in ${successfulDecodes} QR reads (${totalAttempts} frames)`, "ok");
+                showResult(payload);
+                updateProgress();
+                updateTiming();
+                stop();
+                return;
+              }
+            } catch (e) {
+              out(`[error] addPacket: ${e.message || e}`, "ng");
+            }
+          }
+          winReads += targetReads;
+        }
       }
+
       updateProgress();
+      updateTiming();
       scanLoop = requestAnimationFrame(scanFrame);
+    }
+
+    // ---- バックチャネル (serve_https.py の /state 経由) ----
+    async function pollState() {
+      try {
+        const r = await fetch("/state", { cache: "no-store" });
+        if (!r.ok) return;
+        const st = await r.json();
+        const s = st.sender || {};
+        const wasProbing = senderProbing;
+        const active = s._ts && (st.now - s._ts) < 4 && (s.running !== false || s.probing);
+        if (active && s.grid) {
+          senderGrid = s.grid; senderFps = s.fps;
+          senderTotalPackets = s.totalPackets || 0; senderPacketSize = s.packetSize || 0;
+          senderProbing = !!s.probing;
+        } else {
+          senderGrid = senderFps = null; senderTotalPackets = senderPacketSize = 0;
+          senderProbing = false;
+        }
+        if (wasProbing && !senderProbing) clearForNewSession(); // プローブ終了 → 本番待ちで仕切り直し
+        updateSenderInfo();
+      } catch (e) { /* オフライン可 */ }
+    }
+
+    function updateSenderInfo() {
+      const follow = $("followSender").checked;
+      $("senderInfo").textContent = senderGrid
+        ? `送信側: grid ${senderGrid}${senderFps ? " @" + senderFps + "fps" : ""}${follow ? " (追従中)" : " (手動)"}`
+        : `送信側: 未検出${follow ? " — 検出したら自動追従" : ""}`;
+    }
+
+    async function postReceiverState() {
+      const now = performance.now();
+      const elapsedSec = lastWinResetTs ? (now - lastWinResetTs) / 1000 : 0;
+      const rate = winFrames > 0 ? winReads / winFrames : 0;
+      const scanFps = elapsedSec > 0 ? winFrames / elapsedSec : 0;
+      lastWinResetTs = now;
+      winFrames = 0; winReads = 0;
+      const [r, c] = effectiveGrid.split("x").map(Number);
+      const body = {
+        grid: effectiveGrid, cells: r * c,
+        readsPerFrame: +rate.toFixed(2),
+        scanFps: +scanFps.toFixed(1),
+        settling: performance.now() < settlingUntil,
+        framesScanned: totalAttempts, qrReads: successfulDecodes,
+        uniquePackets: uniquePackets.size,
+        payloadSize: decoder ? Number(decoder.payloadSize()) : 0,
+        recovered: !!payload, oti: lastOtiHex,
+      };
+      try { await fetch("/state/receiver", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); } catch (e) { /* オフライン可 */ }
     }
 
     async function sendLog() {
       try {
         const text = Array.from(log.children).map(d => d.textContent).join("\n");
-        const meta = `=== ${new Date().toISOString()} ===\nUA: ${navigator.userAgent}\nframes: ${totalAttempts}, detects: ${successfulDecodes}, unique packets: ${uniquePackets.size}\n=== log ===\n`;
+        const timing = timingEl.textContent;
+        const meta = `=== ${new Date().toISOString()} ===\nUA: ${navigator.userAgent}\nframes: ${totalAttempts}, QR reads: ${successfulDecodes}, unique packets: ${uniquePackets.size}, grid: ${$("grid").value}\n--- timing ---\n${timing}\n=== log ===\n`;
         const res = await fetch("/log", {
           method: "POST",
           headers: { "Content-Type": "text/plain" },
@@ -323,6 +535,11 @@
     $("startBtn").addEventListener("click", () => startCamera());
     $("stopBtn").addEventListener("click", stop);
     $("sendLogBtn").addEventListener("click", sendLog);
+    $("followSender").addEventListener("change", updateSenderInfo);
+    // 画面復帰時に Wake Lock を取り直す (バックグラウンドで自動解放されるため)
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible" && stream && !wakeLock) requestWakeLock();
+    });
 
     out("[init] click \"カメラ開始\" to begin", "info");
   </script>
