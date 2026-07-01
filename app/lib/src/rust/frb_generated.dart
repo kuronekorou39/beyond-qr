@@ -4,6 +4,7 @@
 // ignore_for_file: unused_import, unused_element, unnecessary_import, duplicate_ignore, invalid_use_of_internal_member, annotate_overrides, non_constant_identifier_names, curly_braces_in_flow_control_structures, prefer_const_literals_to_create_immutables, unused_field
 
 import 'api/fountain.dart';
+import 'api/qr.dart';
 import 'api/simple.dart';
 import 'dart:async';
 import 'dart:convert';
@@ -67,7 +68,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => 329267491;
+  int get rustContentHash => -1702242604;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -122,6 +123,12 @@ abstract class RustLibApi extends BaseApi {
   String crateApiSimpleGreet({required String name});
 
   Future<void> crateApiSimpleInitApp();
+
+  QrMatrix crateApiQrMakeQr({
+    required List<int> data,
+    required String ec,
+    required int minVersion,
+  });
 
   RustArcIncrementStrongCountFnType
   get rust_arc_increment_strong_count_FountainDecoder;
@@ -483,6 +490,37 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiSimpleInitAppConstMeta =>
       const TaskConstMeta(debugName: "init_app", argNames: []);
 
+  @override
+  QrMatrix crateApiQrMakeQr({
+    required List<int> data,
+    required String ec,
+    required int minVersion,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_list_prim_u_8_loose(data, serializer);
+          sse_encode_String(ec, serializer);
+          sse_encode_u_8(minVersion, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 12)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_qr_matrix,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiQrMakeQrConstMeta,
+        argValues: [data, ec, minVersion],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiQrMakeQrConstMeta => const TaskConstMeta(
+    debugName: "make_qr",
+    argNames: ["data", "ec", "minVersion"],
+  );
+
   RustArcIncrementStrongCountFnType
   get rust_arc_increment_strong_count_FountainDecoder => wire
       .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFountainDecoder;
@@ -590,6 +628,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Uint8List? dco_decode_opt_list_prim_u_8_strict(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_list_prim_u_8_strict(raw);
+  }
+
+  @protected
+  QrMatrix dco_decode_qr_matrix(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return QrMatrix(
+      size: dco_decode_u_32(arr[0]),
+      modules: dco_decode_list_prim_u_8_strict(arr[1]),
+    );
   }
 
   @protected
@@ -748,6 +798,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     } else {
       return null;
     }
+  }
+
+  @protected
+  QrMatrix sse_decode_qr_matrix(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_size = sse_decode_u_32(deserializer);
+    var var_modules = sse_decode_list_prim_u_8_strict(deserializer);
+    return QrMatrix(size: var_size, modules: var_modules);
   }
 
   @protected
@@ -927,6 +985,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     if (self != null) {
       sse_encode_list_prim_u_8_strict(self, serializer);
     }
+  }
+
+  @protected
+  void sse_encode_qr_matrix(QrMatrix self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_32(self.size, serializer);
+    sse_encode_list_prim_u_8_strict(self.modules, serializer);
   }
 
   @protected

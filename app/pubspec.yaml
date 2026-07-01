@@ -37,6 +37,12 @@ dependencies:
   rust_lib_beyond_qr:
     path: rust_builder
   flutter_rust_bridge: 2.12.0
+  wakelock_plus: ^1.6.1
+  screen_brightness: ^2.1.11
+  mobile_scanner: ^7.2.0
+  image_picker: ^1.2.3
+  # ファイル/画像選択は win32 競合 (file_picker) を避けるため後段で別途導入予定。
+  # 当面はテキスト送信でパイプラインを検証する。
 
 dev_dependencies:
   flutter_test:
