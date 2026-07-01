@@ -1,0 +1,71 @@
+name: build
+
+# Flutter アプリ (app/) + Rust FFI ブリッジ (cargokit) のネイティブビルド検証。
+# Android は APK を成果物として出力、iOS は署名なしでコンパイル確認 (Mac 不要の CI 検証)。
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "fountain/**"
+      - ".github/workflows/build.yml"
+  workflow_dispatch:
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.41.1
+          channel: stable
+          cache: true
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+
+      - name: flutter pub get
+        working-directory: app
+        run: flutter pub get
+
+      - name: Build APK (release)
+        working-directory: app
+        run: flutter build apk --release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: beyond-qr-android-apk
+          path: app/build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+
+  ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.41.1
+          channel: stable
+          cache: true
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+
+      - name: flutter pub get
+        working-directory: app
+        run: flutter pub get
+
+      # 署名なしでコンパイルのみ検証 (証明書は後で TestFlight 配布時に設定)。
+      - name: Build iOS (no codesign)
+        working-directory: app
+        run: flutter build ios --release --no-codesign
