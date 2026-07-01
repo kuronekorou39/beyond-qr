@@ -92,8 +92,10 @@
         <option value="3x3">3×3</option>
       </select></label>
       <label><input type="checkbox" id="followSender" checked> 送信側に追従</label>
+      <label title="複数プロファイルを連続計測。復元しても止まらず runId 変化で次パターンを測る"><input type="checkbox" id="sweepRecv"> スイープ受信</label>
     </div>
     <div class="panel" id="senderInfo">送信側: 未検出</div>
+    <div class="panel" id="sweepPanelRecv" style="display:none"></div>
     <div class="panel" id="timing">待機中</div>
     <div class="panel" id="progress">
       <div>待機中</div>
@@ -151,11 +153,16 @@
     let lastWinResetTs = 0;                    // scanFps 計測用 (ウィンドウ開始時刻)
     let lastProbeGrid = null;                  // プローブ中のグリッド変化検出用
     let wakeLock = null;                       // 画面減光で rAF が間引かれるのを防ぐ
+    let lastFrameTs = 0;                        // 最後に scanFrame が回った時刻 (watchdog 用)
+    let decodeMsAvg = 0;                        // 1フレームのデコード所要 ms の移動平均 (発熱スロットリング検知)
+    let watchdogTimer = null;                   // スキャンループ停止を検出して自動再起動する監視タイマー
     // 実データスイープ用 (送信側の runId で1パターンの境界を作る)
     let senderSweep = false;
     let currentRunId = null;                   // 現在計測中の runId
     let recoveredRunId = null;                 // 直近で復元完了した runId
     let recoverSec = null;                     // そのパターンの転送秒 (最初のQR→復元)
+    let sweepResults = [];                     // 受信側スイープ結果 [{runId,label,ok,recoverSec,unique}]
+    let currentRunLabel = "";                  // 現在計測中パターンのラベル (送信側 patternLabel)
 
     function resetState() {
       decoder = null;
@@ -183,6 +190,13 @@
     }
     function releaseWakeLock() {
       try { if (wakeLock) { wakeLock.release(); wakeLock = null; } } catch (e) { /* noop */ }
+    }
+
+    // スイープ受信モードが有効か。ローカルの「スイープ受信」トグルを優先し、無ければ送信側の
+    // sweep フラグ (バックチャネル推測) にフォールバック。この間は復元しても止めず runId で
+    // パターンを区切って連続計測する。トグルを明示 ON にすれば推測の race に依存しない。
+    function sweepActive() {
+      return $("sweepRecv").checked || senderSweep;
     }
 
     // プローブのダミー残骸を拾わないよう、復号状態を一度クリアして次の本番 OTI を待つ。
@@ -219,6 +233,9 @@
     // スイープ: runId が変わるたびに復号状態をリセットして次パターンを計測する。
     // FPS だけ変えた場合 OTI が同一になり resyncDecode が発火しないため、runId で明示的に区切る。
     function startNewRun(runId, label) {
+      // 前パターンが未復元のまま次へ移る → NG として受信側の結果に記録
+      if (currentRunId != null && recoveredRunId !== currentRunId) recordSweepResult(false);
+      currentRunLabel = label || `#${runId}`;
       currentRunId = runId;
       decoder = null;
       uniquePackets = new Set();
@@ -254,12 +271,29 @@
         $("startBtn").disabled = true;
         $("stopBtn").disabled = false;
         $("sendLogBtn").disabled = false;
-        scanLoop = requestAnimationFrame(scanFrame);
+        lastFrameTs = performance.now();
         statePollTimer = setInterval(pollState, 900);
         statePostTimer = setInterval(postReceiverState, 900);
-        pollState();
+        watchdogTimer = setInterval(scanWatchdog, 2000);   // ループ停止の自動復帰 (長時間スイープ対策)
+        // 走査開始前に送信側状態を確定させる。1パケットで即復元する小ペイロードだと、
+        // pollState 完了前の最初のフレームで復元→senderSweep=false のまま stop() してしまう race を防ぐ。
+        await pollState();
+        scanLoop = requestAnimationFrame(scanFrame);
       } catch (e) {
         out(`[error] camera: ${e.message}`, "ng");
+      }
+    }
+
+    // 画面ロック/バックグラウンドで rAF が凍結すると scanFrame が止まり scanFps=0 のまま黙って全滅する。
+    // stream があるのに一定時間ループが回っていなければ、前面復帰時に自動でループを張り直し wakeLock も取り直す。
+    function scanWatchdog() {
+      if (!stream) return;
+      if (performance.now() - lastFrameTs > 2500) {
+        if (!wakeLock) requestWakeLock();
+        if (scanLoop) cancelAnimationFrame(scanLoop);
+        lastFrameTs = performance.now();               // 多重再起動を防ぐため先に更新
+        scanLoop = requestAnimationFrame(scanFrame);
+        out("[watchdog] スキャン停止を検出 → ループ再起動", "info");
       }
     }
 
@@ -268,6 +302,7 @@
       scanLoop = null;
       if (statePollTimer) { clearInterval(statePollTimer); statePollTimer = null; }
       if (statePostTimer) { clearInterval(statePostTimer); statePostTimer = null; }
+      if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
       if (stream) {
         stream.getTracks().forEach(t => t.stop());
         stream = null;
@@ -311,6 +346,9 @@
         const kbps = payload ? (payload.length / 1024) / Math.max(transfer, 0.001) : 0;
         txt += `復元完了 : ${fmtClock(doneClock)}\n`;
         txt += `▶ 転送 ${transfer.toFixed(2)}s / 総 ${total.toFixed(2)}s / ${kbps.toFixed(1)} KB/s`;
+      } else if (decodeMsAvg > 0) {
+        // 計測中はデコード負荷を出す (発熱で ms が増える=throttling の目安)
+        txt += `デコード ${decodeMsAvg.toFixed(0)}ms/frame`;
       }
       timingEl.textContent = txt;
     }
@@ -392,25 +430,34 @@
       totalAttempts++;
       const vw = video.videoWidth, vh = video.videoHeight;
       if (vw === 0 || vh === 0) { scanLoop = requestAnimationFrame(scanFrame); return; }
+      lastFrameTs = performance.now();   // watchdog へ「ループは生きている」と示す (全分岐の前で更新)
 
       const cropSize = Math.min(vw, vh);
       const cropX = Math.floor((vw - cropSize) / 2);
       const cropY = Math.floor((vh - cropSize) / 2);
       // 追従 ON かつ送信側を検出していればそのグリッド、無ければ手動選択
-      const gridStr = ((senderProbing || senderSweep || $("followSender").checked) && senderGrid) ? senderGrid : $("grid").value;
+      const gridStr = ((senderProbing || sweepActive() || $("followSender").checked) && senderGrid) ? senderGrid : $("grid").value;
       effectiveGrid = gridStr;
       const [rows, cols] = gridStr.split("x").map(Number);
-      // カメラのクロップ実寸を活かす (ダウンスケールで密な単一 QR を潰さない)。
-      // 1x1 は 1 枚が高版 (v25+) で最も画素を要するため crop 実寸をそのまま使い、
-      // グリッドが大きいときだけ 480×cols まで引き上げてタイル毎の画素を確保する。
-      const targetSize = Math.min(1280, Math.max(640, cropSize, 480 * Math.max(rows, cols)));
+      // grid ごとに必要十分な解像度に。1x1 は単一の高版QR(v18)なので crop 実寸(~1080)を使う。
+      // 多グリッドはタイルが低版なので 1080² は過剰で、jsQR を N 回走らせる分だけ scanFps を落とす。
+      // タイル ~460px を狙って総解像度を下げ、デコード速度(scanFps)を優先する。
+      const single = Math.max(rows, cols) === 1;
+      const targetSize = single
+        ? Math.min(1280, Math.max(640, cropSize))
+        : Math.min(1280, Math.max(720, 460 * Math.max(rows, cols)));
       captureCanvas.width = targetSize;
       captureCanvas.height = targetSize;
       const ctx = captureCanvas.getContext("2d", { willReadFrequently: true });
       ctx.drawImage(video, cropX, cropY, cropSize, cropSize, 0, 0, targetSize, targetSize);
       const imgData = ctx.getImageData(0, 0, targetSize, targetSize);
 
+      const decodeT0 = performance.now();
       const codes = detectQRCodesGrid(imgData, rows, cols);  // グリッドにタイル分割して各タイルを読む
+      const decodeMs = performance.now() - decodeT0;         // 発熱スロットリング検知用 (増えたら CPU が絞られている)
+      decodeMsAvg = decodeMsAvg ? decodeMsAvg * 0.9 + decodeMs * 0.1 : decodeMs;
+      winFrames++;
+      successfulDecodes += codes.length;
       winFrames++;
       successfulDecodes += codes.length;
 
@@ -431,7 +478,7 @@
         return;
       }
 
-      if (senderSweep && payload && recoveredRunId === currentRunId) {
+      if (sweepActive() && payload && recoveredRunId === currentRunId) {
         // スイープ: 当該パターンは復元済み。デコードせず次パターン (runId 変化) を待つ
         progressEl.firstElementChild.textContent = `✅ #${currentRunId} 復元済 (${recoverSec}s) — 次パターン待ち`;
         updateTiming();
@@ -484,10 +531,11 @@
                 showResult(payload);
                 updateProgress();
                 updateTiming();
-                if (senderSweep) {
+                if (sweepActive()) {
                   // スイープ: 止めずに記録し、次パターン (runId 変化) を待つ
                   recoveredRunId = currentRunId;
                   recoverSec = firstPacketTs ? +((doneTs - firstPacketTs) / 1000).toFixed(2) : null;
+                  recordSweepResult(true);   // 受信側の結果パネルに反映
                   out(`[sweep] #${currentRunId} 復元 ${recoverSec}s — 止めずに次パターン待ち`, "ok");
                   postReceiverState();   // 即報告して送信側を次パターンへ進ませる
                   scanLoop = requestAnimationFrame(scanFrame);
@@ -517,13 +565,15 @@
         const st = await r.json();
         const s = st.sender || {};
         const wasProbing = senderProbing;
+        const wasSenderSweep = senderSweep;
         const active = s._ts && (st.now - s._ts) < 4 && (s.running !== false || s.probing);
         if (active && s.grid) {
           senderGrid = s.grid; senderFps = s.fps;
           senderTotalPackets = s.totalPackets || 0; senderPacketSize = s.packetSize || 0;
           senderProbing = !!s.probing;
           senderSweep = !!s.sweep;
-          if (senderSweep && typeof s.runId === "number" && s.runId !== currentRunId) {
+          if (!wasSenderSweep && senderSweep) sweepResults = [];   // 新スイープ開始 → 結果クリア
+          if (sweepActive() && typeof s.runId === "number" && s.runId !== currentRunId) {
             startNewRun(s.runId, s.patternLabel);   // 新パターン → 計測リセット (OTI 同一でも区切る)
           }
         } else {
@@ -531,16 +581,60 @@
           senderProbing = false; senderSweep = false;
         }
         if (wasProbing && !senderProbing) clearForNewSession(); // プローブ終了 → 本番待ちで仕切り直し
+        if (wasSenderSweep && !senderSweep) finalizeSweep();     // スイープ終了 → 最終結果を確定表示
         updateSenderInfo();
       } catch (e) { /* オフライン可 */ }
     }
 
     function updateSenderInfo() {
-      const follow = $("followSender").checked || senderSweep;
-      const sw = senderSweep ? ` [スイープ#${currentRunId != null ? currentRunId : "?"}]` : "";
+      const follow = $("followSender").checked || sweepActive();
+      const sw = sweepActive() ? ` [スイープ#${currentRunId != null ? currentRunId : "?"}]` : "";
       $("senderInfo").textContent = senderGrid
         ? `送信側: grid ${senderGrid}${senderFps ? " @" + senderFps + "fps" : ""}${follow ? " (追従中)" : " (手動)"}${sw}`
         : `送信側: 未検出${follow ? " — 検出したら自動追従" : ""}`;
+    }
+
+    // ---- 受信側スイープ結果パネル ----
+    // 各パターンの復元可否/秒数を受信側自身の画面に表示する。オフラインの人アシスト校正では
+    // ここに出た「推奨設定」を人が読んで送信側へ反映する (バックチャネルの代わりに人の目を使う)。
+    function recordSweepResult(ok) {
+      if (currentRunId == null) return;
+      if (sweepResults.some(r => r.runId === currentRunId)) return;   // 二重記録防止
+      sweepResults.push({
+        runId: currentRunId, label: currentRunLabel || `#${currentRunId}`,
+        ok, recoverSec: ok ? recoverSec : null, unique: uniquePackets.size,
+      });
+      renderSweepResultsRecv(false);
+    }
+
+    function finalizeSweep() {
+      // 最後のパターンが未復元なら NG 記録してから最終表示
+      if (currentRunId != null && recoveredRunId !== currentRunId) recordSweepResult(false);
+      renderSweepResultsRecv(true);
+    }
+
+    function renderSweepResultsRecv(done) {
+      const el = $("sweepPanelRecv");
+      if (!sweepResults.length) { el.style.display = "none"; return; }
+      el.style.display = "block";
+      const oks = sweepResults.filter(r => r.ok);
+      const best = oks.length ? [...oks].sort((a, b) => (a.recoverSec || 1e9) - (b.recoverSec || 1e9))[0] : null;
+      const sorted = [...sweepResults].sort((a, b) => {
+        if (a.ok !== b.ok) return a.ok ? -1 : 1;
+        return (a.recoverSec || 1e9) - (b.recoverSec || 1e9);
+      });
+      let html = `<b>スイープ結果</b> ${done ? "(完了)" : `(計測中 ${sweepResults.length}件)`}`;
+      html += `<table style="border-collapse:collapse;width:100%;margin-top:4px;font-size:0.85em">` +
+        `<tr><th>設定</th><th>結果</th><th>秒</th><th>uniq</th></tr>`;
+      for (const r of sorted) {
+        const style = best && r.runId === best.runId ? "background:#d8f5d8;font-weight:bold"
+          : (r.ok ? "" : "color:#c44");
+        html += `<tr style="${style}"><td>${r.label}</td><td>${r.ok ? "OK" : "NG"}</td>` +
+          `<td>${r.recoverSec != null ? r.recoverSec : "—"}</td><td>${r.unique}</td></tr>`;
+      }
+      html += `</table>`;
+      if (best) html += `<div style="margin-top:4px">→ この環境の推奨: <b>${best.label}</b> (${best.recoverSec}s)。送信側をこの設定に。</div>`;
+      el.innerHTML = html;
     }
 
     async function postReceiverState() {
@@ -553,6 +647,7 @@
       const [r, c] = effectiveGrid.split("x").map(Number);
       const body = {
         grid: effectiveGrid, cells: r * c,
+        decodeMs: +decodeMsAvg.toFixed(1),
         readsPerFrame: +rate.toFixed(2),
         scanFps: +scanFps.toFixed(1),
         settling: performance.now() < settlingUntil,
@@ -585,9 +680,17 @@
     $("stopBtn").addEventListener("click", stop);
     $("sendLogBtn").addEventListener("click", sendLog);
     $("followSender").addEventListener("change", updateSenderInfo);
+    $("sweepRecv").addEventListener("change", () => { if ($("sweepRecv").checked) sweepResults = []; updateSenderInfo(); });
     // 画面復帰時に Wake Lock を取り直す (バックグラウンドで自動解放されるため)
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible" && stream && !wakeLock) requestWakeLock();
+      if (document.visibilityState === "visible" && stream) {
+        if (!wakeLock) requestWakeLock();
+        if (performance.now() - lastFrameTs > 1000) {   // 復帰時に死んでいたら張り直す
+          if (scanLoop) cancelAnimationFrame(scanLoop);
+          lastFrameTs = performance.now();
+          scanLoop = requestAnimationFrame(scanFrame);
+        }
+      }
     });
 
     out("[init] click \"カメラ開始\" to begin", "info");

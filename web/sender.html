@@ -65,14 +65,14 @@
     <textarea id="payloadText" placeholder="ペイロード (テキスト入力 or ファイル選択)"></textarea>
     <input type="file" id="payloadFile">
     <label>グリッド: <select id="grid">
-      <option value="1x1" selected>1×1</option>
-      <option value="1x2">1×2</option>
+      <option value="1x1">1×1</option>
+      <option value="1x2" selected>1×2</option>
       <option value="2x2">2×2</option>
       <option value="2x3">2×3</option>
       <option value="3x3">3×3</option>
     </select></label>
     <span class="fps-group">FPS:
-      <input type="number" id="fps" value="15" min="1" max="60" style="width: 56px">
+      <input type="number" id="fps" value="12" min="1" max="60" style="width: 56px">
       <button type="button" class="preset" data-fps="5">5</button>
       <button type="button" class="preset" data-fps="10">10</button>
       <button type="button" class="preset" data-fps="15">15</button>
@@ -81,11 +81,11 @@
     </span>
     <label>EC: <select id="ecLevel">
       <option value="L">L (高容量)</option>
-      <option value="M">M</option>
+      <option value="M" selected>M</option>
       <option value="Q">Q</option>
-      <option value="H" selected>H (高訂正)</option>
+      <option value="H">H (高訂正)</option>
     </select></label>
-    <label>QR Ver: <input type="number" id="qrVersion" value="25" min="10" max="40" style="width: 60px"></label>
+    <label>QR Ver(0=自動): <input type="number" id="qrVersion" value="0" min="0" max="40" style="width: 60px"></label>
     <label class="size-group">表示:
       <input type="range" id="dispSize" min="40" max="100" step="1" value="90">
       <span id="dispSizeVal">90%</span>
@@ -138,12 +138,13 @@
     let probing = false, probeConfig = null;  // プローブ(調べる)モード
     let sweeping = false, sweepRunId = 0;     // 実データ自動スイープ (runId で受信側と1パターンを同期)
     const GRID_ORDER = ["1x1", "1x2", "2x2", "2x3", "3x3"]; // セル数 昇順
-    // パケットサイズはグリッドに連動して縮小する (グリッドが大きいほど 1 枚の QR を低版・小さく保つ)。
-    // 上限 540: 実機計測でこの環境の 1x1 読み取り上限は v18。OTI 12B 込みで v18@EC=M の容量
-    // 564B に収まる 552B が最大なので、少し余裕を見て 540B で頭打ち (throughput 最大化)。
-    // 注意: この上限は EC=M 前提。EC=H だと v18 容量が 310B しかなく容量超過するので M で送ること。
-    // (2x2 以降は元々 250B 以下なので影響なし)
-    const packetSizeFor = (rows, cols) => Math.max(120, Math.min(540, Math.round(500 / Math.max(rows, cols))));
+    // パケットサイズは grid ごとの実測ベストを使う (プロファイルスイープで最適点を確定)。
+    // EC=M / 版=自動 前提。多グリッドはタイルを低版に振った方が「各タイルを確実に読む」ので速い。
+    // 実測: 1x2 M300 @12fps が最速 (211KB を 36秒 / 5.83KB/s)。1x1=540 は v18@M の容量上限付近。
+    // 未定義 grid は 200/max にフォールバック。閾値はこの環境 (iPhone/固定) 依存なので運用で調整可。
+    const PACKET_BY_GRID = { "1x1": 540, "1x2": 300, "2x2": 180, "2x3": 160, "3x3": 140 };
+    const packetSizeFor = (rows, cols) =>
+      PACKET_BY_GRID[`${rows}x${cols}`] || Math.max(120, Math.round(200 / Math.max(rows, cols)));
 
     const setStatus = (msg) => { status.textContent = msg; };
     const pct = (x) => Math.round(x * 100);
@@ -194,7 +195,8 @@
       const { rows, cols } = gridDims();
       const n = rows * cols;
       const total = encoder.packetCount();
-      const version = sweeping ? 0 : parseInt($("qrVersion").value);  // スイープ中は自動最小版 (密度を最適化)
+      const vv = parseInt($("qrVersion").value) || 0;
+      const version = (sweeping || vv <= 0) ? 0 : vv;   // 0 または スイープ中は自動最小版 (密度を最適化)
       const ecLevel = $("ecLevel").value;
 
       ctx.fillStyle = "#fff";
@@ -515,22 +517,26 @@
     // QR版は自動最小化 (renderFrame が sweeping 中は version 0)。受信側とは /state の runId で
     // 1パターンの境界を同期 (grid 据え置きで FPS だけ変えると OTI が同一になるため、OTI では区切れない)。
     // 1パターンが SWEEP_TIMEOUT_MS 内に復元できなければ TIMEOUT 記録して次へ。無人運用前提。
-    // ↓ この3つを編集すれば対象を変えられる。
-    // 3x3 は throughput 律速 (scanFps ~1.7 で 9×jsQR がスマホ CPU に追いつかず timeout) のため
-    // 一旦除外。まず 1x1 / 2x2 が安定して復元できることを確認してから再挑戦する。
-    const SWEEP_GRIDS = ["1x1", "2x2"];
-    const SWEEP_FPS = [3, 5, 8, 12, 15];
-    const SWEEP_REPEATS = 1;
-    const SWEEP_TIMEOUT_MS = 240000;            // 1パターンの上限 (4分)
+    // ↓ プロファイル (robust→aggressive) を編集すれば対象を変えられる。
+    // 各プロファイルは {grid, ec, packet, fps} を明示指定。QR版は renderFrame が自動最小化するので
+    // (packet+OTI12B, ec) から決まる最小版が使われる = 環境の読み取り上限を超えたものは NG になり、
+    // 「どの grid/packet/ec までこの環境で復元できるか」のケイパビリティ地図が得られる。
+    // 3x3 は throughput 律速のため一旦除外 (1x1/1x2/2x2 が安定してから再挑戦)。
+    // 受信側の多グリッド解像度を下げた (jsQR 軽量化=scanFps↑) のに合わせ、多グリッドは
+    // タイルを低版に振って「各タイルを確実に読む」方向へ。QR/frame をタイル数まで上げるのが狙い。
+    // 初回スイープで 1x2/2x2 の可読性は確認済み。ここは throughput 最適点を探る。
+    const SWEEP_PROFILES = [
+      { grid: "1x1", ec: "M", packet: 540, fps: 12 },  // 基準 (v18, 手動 ~49s)
+      { grid: "1x2", ec: "M", packet: 300, fps: 12 },  // 2枚並列・中版 (各タイル確実に)
+      { grid: "2x2", ec: "M", packet: 180, fps: 10 },  // 4枚並列・低版 (QR/frame を 4 に近づける)
+      { grid: "2x2", ec: "M", packet: 300, fps: 10 },  // 4枚並列・中版 (packet 大きめと比較)
+    ];
+    const SWEEP_TIMEOUT_MS = 150000;            // 1プロファイルの上限 (150s)
+    const SWEEP_NOPROGRESS_MS = 20000;          // この時間 unique=0 のままなら見切って次へ (密すぎ判定)
     let lastPayloadLen = 0;
 
     function buildSweepPatterns() {
-      const pats = [];
-      for (let rep = 0; rep < SWEEP_REPEATS; rep++)
-        for (const g of SWEEP_GRIDS)
-          for (const f of SWEEP_FPS)
-            pats.push({ grid: g, fps: f, rep });
-      return pats;
+      return SWEEP_PROFILES.map(p => ({ ...p, label: `${p.grid} ${p.ec}${p.packet} @${p.fps}` }));
     }
 
     async function postSweepState(runId, label, idx, total, running) {
@@ -550,8 +556,8 @@
     async function runOnePattern(payload, pat, idx, total) {
       $("grid").value = pat.grid;
       $("fps").value = String(pat.fps);
-      const { rows, cols } = gridDims();
-      const packetSize = packetSizeFor(rows, cols);
+      $("ecLevel").value = pat.ec;               // renderFrame が sweeping 中に参照する EC を切替
+      const packetSize = pat.packet;
       currentPacketSize = packetSize;
       const extraRepair = Math.ceil(payload.length / packetSize * 0.5);
       encoder = new FountainEncoder(payload, packetSize, extraRepair);
@@ -562,7 +568,7 @@
       packetCursor = 0; frameCount = 0;
       sweepRunId++;
       const myRun = sweepRunId;
-      const label = `${pat.grid}@${pat.fps}`;
+      const label = pat.label;
 
       if (timer) clearInterval(timer);
       timer = setInterval(renderFrame, 1000 / pat.fps);
@@ -571,14 +577,21 @@
 
       const startWall = performance.now();
       const deadline = startWall + SWEEP_TIMEOUT_MS;
-      let recovered = null, lastRecv = null;
+      let recovered = null, lastRecv = null, gaveUp = false;
       while (performance.now() < deadline && sweeping) {
         postSweepState(myRun, label, idx, total, true);   // state を新鮮に保つハートビート
         const recv = await sampleReceiver();
         if (recv) lastRecv = recv;
         if (recv && recv.recoveredRunId === myRun) { recovered = recv; break; }
+        const uniq = (lastRecv && lastRecv.uniquePackets) || 0;
+        // 一定時間 1枚も読めない = この環境には密すぎる。見切って次プロファイルへ (時間節約)
+        if (uniq === 0 && performance.now() - startWall > SWEEP_NOPROGRESS_MS) {
+          gaveUp = true;
+          setStatus(`[スイープ ${idx + 1}/${total}] ${label} 見切り (${SWEEP_NOPROGRESS_MS / 1000}s 読取0=密すぎ)`);
+          break;
+        }
         const remain = Math.round((deadline - performance.now()) / 1000);
-        setStatus(`[スイープ ${idx + 1}/${total}] ${label} 計測中... 残り${remain}s / unique ${lastRecv && lastRecv.uniquePackets || 0}/${neededApprox}`);
+        setStatus(`[スイープ ${idx + 1}/${total}] ${label} 計測中... 残り${remain}s / unique ${uniq}/${neededApprox}`);
         await sleep(700);
       }
       const wallSec = +((performance.now() - startWall) / 1000).toFixed(1);
@@ -586,8 +599,8 @@
       if (recovered) {
         const transferSec = recovered.recoverSec != null ? recovered.recoverSec : null;
         return {
-          idx, label, grid: pat.grid, fps: pat.fps, packetSize, totalPackets, neededApprox,
-          ok: true, timeout: false, wallSec, transferSec,
+          idx, label, grid: pat.grid, ec: pat.ec, fps: pat.fps, packetSize, totalPackets, neededApprox,
+          ok: true, timeout: false, gaveUp: false, wallSec, transferSec,
           kbps: transferSec ? +((payload.length / 1024) / transferSec).toFixed(2) : null,
           scanFps: recovered.scanFps != null ? recovered.scanFps : null,
           readsPerFrame: recovered.readsPerFrame != null ? recovered.readsPerFrame : null,
@@ -595,11 +608,11 @@
         };
       }
       return {
-        idx, label, grid: pat.grid, fps: pat.fps, packetSize, totalPackets, neededApprox,
-        ok: false, timeout: sweeping, wallSec, transferSec: null, kbps: null,
+        idx, label, grid: pat.grid, ec: pat.ec, fps: pat.fps, packetSize, totalPackets, neededApprox,
+        ok: false, timeout: sweeping && !gaveUp, gaveUp, wallSec, transferSec: null, kbps: null,
         scanFps: lastRecv && lastRecv.scanFps != null ? lastRecv.scanFps : null,
         readsPerFrame: lastRecv && lastRecv.readsPerFrame != null ? lastRecv.readsPerFrame : null,
-        unique: lastRecv && lastRecv.uniquePackets || 0,
+        unique: (lastRecv && lastRecv.uniquePackets) || 0,
       };
     }
 
@@ -674,10 +687,10 @@
         `${r.idx + 1}\t${r.label}\tpkt=${r.packetSize}\ttotalPkts=${r.totalPackets}\t` +
         (r.ok
           ? `OK\ttransfer=${r.transferSec}s\twall=${r.wallSec}s\t${r.kbps}KB/s\tscanFps=${r.scanFps}\tQR/frame=${r.readsPerFrame}\tunique=${r.unique}/${r.neededApprox}`
-          : `NG(${r.timeout ? "timeout" : "abort"})\twall=${r.wallSec}s\tunique=${r.unique}/${r.neededApprox}\tscanFps=${r.scanFps}\tQR/frame=${r.readsPerFrame}`)
+          : `NG(${r.gaveUp ? "見切り-密すぎ" : r.timeout ? "timeout" : "abort"})\twall=${r.wallSec}s\tunique=${r.unique}/${r.neededApprox}\tscanFps=${r.scanFps}\tQR/frame=${r.readsPerFrame}`)
       );
-      const head = `=== beyond-qr 実データスイープ ${done ? "(完了)" : "(進行中)"} ===\n` +
-        `payload=${lastPayloadLen}B  patterns=${results.length}  timeout=${SWEEP_TIMEOUT_MS / 1000}s  repeats=${SWEEP_REPEATS}\n`;
+      const head = `=== beyond-qr プロファイルスイープ ${done ? "(完了)" : "(進行中)"} ===\n` +
+        `payload=${lastPayloadLen}B  profiles=${results.length}  timeout=${SWEEP_TIMEOUT_MS / 1000}s  noprogress=${SWEEP_NOPROGRESS_MS / 1000}s\n`;
       try { await fetch("/log", { method: "POST", headers: { "Content-Type": "text/plain" }, body: head + rows.join("\n") + "\n" }); } catch (e) { /* noop */ }
     }
 
