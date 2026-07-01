@@ -95,14 +95,23 @@ class HistoryStore {
     await _index.writeAsString(jsonEncode(j));
   }
 
-  Future<void> addReceived(String name, String type, Uint8List bytes) async {
+  /// ストリーミング受信用: 出力先パスを確保 (実データはここへ直接書き込む)。
+  ({String id, String path}) reserveReceivedPath() {
     final id = _newId();
-    final rel = 'received/${id}_$name';
-    await File('${_dir.path}/$rel').writeAsBytes(bytes);
+    return (id: id, path: '${_received.path}/$id');
+  }
+
+  /// 受信完了を履歴に登録 (実データは reserveReceivedPath のパスに書き込み済み)。
+  Future<void> registerReceived(String id, String name, String type, int size) async {
     received.insert(
       0,
       HistoryItem(
-          id: id, name: name, type: type, size: bytes.length, tsMs: DateTime.now().millisecondsSinceEpoch, file: rel),
+          id: id,
+          name: name,
+          type: type,
+          size: size,
+          tsMs: DateTime.now().millisecondsSinceEpoch,
+          file: 'received/$id'),
     );
     await _persist();
     revision.value++;
@@ -124,10 +133,13 @@ class HistoryStore {
     revision.value++;
   }
 
+  /// 受信データのファイル (画像は Image.file でストリーム表示、テキストは小さい時だけ読む)。
+  File? receivedFile(HistoryItem item) =>
+      item.file == null ? null : File('${_dir.path}/${item.file}');
+
   Future<Uint8List?> readReceived(HistoryItem item) async {
-    if (item.file == null) return null;
-    final f = File('${_dir.path}/${item.file}');
-    if (!await f.exists()) return null;
+    final f = receivedFile(item);
+    if (f == null || !await f.exists()) return null;
     return f.readAsBytes();
   }
 }

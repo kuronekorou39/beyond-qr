@@ -1,37 +1,21 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
-import 'package:flutter/material.dart';
 import 'package:file_selector/file_selector.dart';
+import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'history_store.dart';
+import 'protocol.dart';
 import 'src/rust/api/fountain.dart';
 import 'src/rust/api/qr.dart';
 
-/// grid ごとの実測ベスト packetSize (web 版と同じ。EC=M / 版=自動 前提)。
-const _packetByGrid = {
-  '1x1': 540,
-  '1x2': 300,
-  '2x2': 180,
-  '2x3': 160,
-  '3x3': 140,
-};
-
+/// grid ごとの実測ベスト packetSize (EC=M / 版=自動 前提)。
+const _packetByGrid = {'1x1': 540, '1x2': 300, '2x2': 180, '2x3': 160, '3x3': 140};
 const _grids = ['1x1', '1x2', '2x2', '2x3', '3x3'];
 const _ecLevels = ['L', 'M', 'Q', 'H'];
-
-/// web 版 wrapPayload と同じ: [uint32be headerLen][json header][body]。
-Uint8List _wrapPayload(String name, String type, Uint8List body) {
-  final header = utf8.encode(jsonEncode({'name': name, 'type': type, 'size': body.length}));
-  final out = BytesBuilder();
-  final lenBytes = ByteData(4)..setUint32(0, header.length, Endian.big);
-  out.add(lenBytes.buffer.asUint8List());
-  out.add(header);
-  out.add(body);
-  return out.toBytes();
-}
+const _manifestEveryFrames = 20; // このフレーム間隔で 1 セルをマニフェストにする
 
 class SendScreen extends StatefulWidget {
   const SendScreen({super.key});
@@ -42,22 +26,28 @@ class SendScreen extends StatefulWidget {
 class _SendScreenState extends State<SendScreen> {
   final _textCtrl = TextEditingController();
   final _picker = ImagePicker();
+  String? _pickedPath;
   String? _pickedName;
-  Uint8List? _pickedBytes;
   String _pickedType = 'application/octet-stream';
+  int _pickedSize = 0;
 
   String _grid = '1x2';
   String _ec = 'M';
   int _fps = 12;
 
-  FountainEncoder? _enc;
-  Uint8List _oti = Uint8List(0);
-  int _total = 0;
-  int _cursor = 0;
-  Timer? _timer;
   bool _running = false;
+  int _seq = 0; // 送信世代 (停止/再開の識別)
   List<QrMatrix> _frame = [];
   String _status = '';
+
+  // 送信状態
+  BlockSource? _source;
+  StreamManifest? _manifest;
+  int _blockIdx = -1;
+  FountainEncoder? _enc;
+  int _packetInBlock = 0;
+  int _frameCount = 0;
+  int _pass = 0;
 
   (int, int) get _dims {
     final p = _grid.split('x');
@@ -65,31 +55,29 @@ class _SendScreenState extends State<SendScreen> {
   }
 
   Future<void> _pickImage() async {
-    // QR 転送は ~200KB 向けなので、長辺 1600px・品質 82 に縮小して取り込む
-    // (フル解像度の写真は数MB→パケット数万で復元不能になるため)。
+    // 画像は長辺1600px/品質82に縮小して取り込む (フル解像度は転送が非現実的なため。
+    // 原寸で送りたい場合は「ファイル」で選ぶ)。
     final x = await _picker.pickImage(
-      source: ImageSource.gallery,
-      maxWidth: 1600,
-      maxHeight: 1600,
-      imageQuality: 82,
-    );
+        source: ImageSource.gallery, maxWidth: 1600, maxHeight: 1600, imageQuality: 82);
     if (x == null) return;
-    final bytes = await x.readAsBytes();
+    final len = await x.length();
     setState(() {
+      _pickedPath = x.path;
       _pickedName = x.name;
-      _pickedBytes = bytes;
       _pickedType = _imageMime(x.name);
+      _pickedSize = len;
     });
   }
 
   Future<void> _pickFile() async {
     final f = await openFile();
     if (f == null) return;
-    final bytes = await f.readAsBytes();
+    final len = await f.length();
     setState(() {
+      _pickedPath = f.path;
       _pickedName = f.name;
-      _pickedBytes = bytes;
       _pickedType = f.mimeType ?? 'application/octet-stream';
+      _pickedSize = len;
     });
   }
 
@@ -101,99 +89,142 @@ class _SendScreenState extends State<SendScreen> {
     return 'image/jpeg';
   }
 
-  Uint8List _buildPayload() {
-    if (_pickedBytes != null) {
-      return _wrapPayload(_pickedName ?? 'file.bin', _pickedType, _pickedBytes!);
+  BlockSource? _buildSource() {
+    if (_pickedPath != null) {
+      return FileBlockSource(_pickedPath!, _pickedName ?? 'file.bin', _pickedType, _pickedSize);
     }
     final body = Uint8List.fromList(utf8.encode(_textCtrl.text));
-    return _wrapPayload('message.txt', 'text/plain;charset=utf-8', body);
+    if (body.isEmpty) return null;
+    return MemoryBlockSource(body, 'message.txt', 'text/plain;charset=utf-8');
   }
 
   Future<void> _start() async {
-    final payload = _buildPayload();
-    if (payload.length <= 6) {
+    final source = _buildSource();
+    if (source == null || source.length == 0) {
       setState(() => _status = 'ペイロードが空です');
       return;
     }
-    // QR + カメラ転送は ~200KB 向け。大きすぎるとパケットが数千〜数万個になり、
-    // 転送に数分〜、受信側の RaptorQ 復号も破綻する。上限でブロックする。
-    if (payload.length > 800 * 1024) {
-      setState(() => _status =
-          '大きすぎます (${(payload.length / 1024).round()}KB)。QR転送は ~200KB 向けです。'
-          '画像は自動縮小されますが、大きいファイルは非対応です');
-      return;
-    }
     final packetSize = _packetByGrid[_grid] ?? 200;
-    final extraRepair = (payload.length / packetSize * 0.5).ceil();
-    final enc = FountainEncoder(payload: payload, packetSize: packetSize, extraRepair: extraRepair);
-    _enc = enc;
-    _oti = enc.otiBytes();
-    _total = enc.packetCount();
-    _cursor = 0;
+    final total = source.length;
+    final blockCount = (total / kBlockSize).ceil().clamp(1, 1 << 30);
 
-    // 送信試行を履歴に記録 (オフラインなので成否は不明=試行記録)
-    final sentName = _pickedBytes != null ? (_pickedName ?? 'file.bin') : 'message.txt';
-    final sentType = _pickedBytes != null ? _pickedType : 'text/plain;charset=utf-8';
-    HistoryStore.instance.addSent(sentName, sentType, payload.length, _grid, _ec);
+    // 各ブロックの OTI を計算 (full/last)。repair はブロックのシンボル数の 30%。
+    final lastLen = total - (blockCount - 1) * kBlockSize;
+    final lastBytes = await source.readBlock((blockCount - 1) * kBlockSize, lastLen);
+    final otiLast = FountainEncoder(
+            payload: lastBytes, packetSize: packetSize, extraRepair: (lastLen / packetSize * 0.3).ceil())
+        .otiBytes();
+    Uint8List otiFull = otiLast;
+    if (blockCount > 1) {
+      final fullBytes = await source.readBlock(0, kBlockSize);
+      otiFull = FountainEncoder(
+              payload: fullBytes,
+              packetSize: packetSize,
+              extraRepair: (kBlockSize / packetSize * 0.3).ceil())
+          .otiBytes();
+    }
+
+    _manifest = StreamManifest(
+      name: source.name,
+      type: source.type,
+      totalSize: total,
+      blockSize: kBlockSize,
+      blockCount: blockCount,
+      otiFull: otiFull,
+      otiLast: otiLast,
+    );
+    _source = source;
+    _blockIdx = -1;
+    _enc = null;
+    _packetInBlock = 0;
+    _frameCount = 0;
+    _pass = 0;
+
+    HistoryStore.instance.addSent(source.name, source.type, total, _grid, _ec);
 
     try {
       await WakelockPlus.enable();
       await ScreenBrightness().setApplicationScreenBrightness(1.0);
-    } catch (_) {/* 非対応端末は無視 */}
+    } catch (_) {}
 
+    final mySeq = ++_seq;
     setState(() {
       _running = true;
-      _status = 'payload ${payload.length}B → $_total packets (${packetSize}B/QR, grid $_grid)';
+      _status = '${source.name}  ${_fmtSize(total)}  ·  $blockCount ブロック  ·  grid $_grid';
     });
-    _renderFrame();
-    _timer = Timer.periodic(Duration(milliseconds: (1000 / _fps).round()), (_) => _renderFrame());
+    _txLoop(mySeq);
   }
 
-  void _renderFrame() {
-    final enc = _enc;
-    if (enc == null || _total == 0) return;
-    final (rows, cols) = _dims;
-    final n = rows * cols;
-    final mats = <QrMatrix>[];
-    for (int k = 0; k < n; k++) {
-      final idx = (_cursor + k) % _total;
-      final packet = enc.packet(i: idx);
-      final data = Uint8List(_oti.length + packet.length)
-        ..setRange(0, _oti.length, _oti)
-        ..setRange(_oti.length, _oti.length + packet.length, packet);
-      mats.add(makeQr(data: data, ec: _ec, minVersion: 0));
+  Future<Uint8List> _nextDataPayload() async {
+    final m = _manifest!;
+    if (_enc == null || _packetInBlock >= _enc!.packetCount()) {
+      _blockIdx = (_blockIdx + 1) % m.blockCount;
+      if (_blockIdx == 0) _pass++;
+      final off = _blockIdx * m.blockSize;
+      final len = m.blockLen(_blockIdx);
+      final bytes = await _source!.readBlock(off, len);
+      final packetSize = _packetByGrid[_grid] ?? 200;
+      _enc = FountainEncoder(
+          payload: bytes, packetSize: packetSize, extraRepair: (len / packetSize * 0.3).ceil());
+      _packetInBlock = 0;
     }
-    _cursor = (_cursor + n) % _total;
-    setState(() => _frame = mats);
+    final packet = _enc!.packet(i: _packetInBlock++);
+    return buildDataQr(_blockIdx, packet);
+  }
+
+  Future<void> _txLoop(int mySeq) async {
+    final interval = Duration(milliseconds: (1000 / _fps).round());
+    while (_running && mySeq == _seq) {
+      final (rows, cols) = _dims;
+      final n = rows * cols;
+      final mats = <QrMatrix>[];
+      final showManifest = _frameCount % _manifestEveryFrames == 0;
+      for (int cell = 0; cell < n; cell++) {
+        final Uint8List payload;
+        if (showManifest && cell == 0) {
+          payload = _manifest!.toQr();
+        } else {
+          payload = await _nextDataPayload();
+        }
+        mats.add(makeQr(data: payload, ec: _ec, minVersion: 0));
+      }
+      if (mySeq != _seq) break;
+      _frameCount++;
+      setState(() {
+        _frame = mats;
+        _status = '送信中  ·  ブロック ${_blockIdx < 0 ? 0 : _blockIdx + 1}/${_manifest!.blockCount}'
+            '  ·  ${_pass + 1} 巡目';
+      });
+      await Future.delayed(interval);
+    }
   }
 
   Future<void> _stop() async {
-    _timer?.cancel();
-    _timer = null;
+    _seq++;
+    _running = false;
+    await _source?.close();
+    _source = null;
+    _enc = null;
     try {
       await WakelockPlus.disable();
       await ScreenBrightness().resetApplicationScreenBrightness();
     } catch (_) {}
-    setState(() {
-      _running = false;
-      _frame = [];
-    });
+    setState(() => _frame = []);
   }
 
   @override
   void dispose() {
-    _timer?.cancel();
+    _seq++;
+    _running = false;
     _textCtrl.dispose();
+    _source?.close();
     WakelockPlus.disable();
     ScreenBrightness().resetApplicationScreenBrightness().catchError((_) {});
     super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) {
-    if (_running) return _buildTransmit(context);
-    return _buildConfig(context);
-  }
+  Widget build(BuildContext context) => _running ? _buildTransmit(context) : _buildConfig(context);
 
   Widget _buildTransmit(BuildContext context) {
     final (rows, cols) = _dims;
@@ -214,11 +245,7 @@ class _SendScreenState extends State<SendScreen> {
           child: Row(
             children: [
               Expanded(child: Text(_status, style: Theme.of(context).textTheme.bodySmall)),
-              FilledButton.icon(
-                onPressed: _stop,
-                icon: const Icon(Icons.stop),
-                label: const Text('停止'),
-              ),
+              FilledButton.icon(onPressed: _stop, icon: const Icon(Icons.stop), label: const Text('停止')),
             ],
           ),
         ),
@@ -241,17 +268,10 @@ class _SendScreenState extends State<SendScreen> {
         const SizedBox(height: 8),
         Row(
           children: [
-            OutlinedButton.icon(
-              onPressed: _pickImage,
-              icon: const Icon(Icons.image),
-              label: const Text('画像'),
-            ),
+            OutlinedButton.icon(onPressed: _pickImage, icon: const Icon(Icons.image), label: const Text('画像')),
             const SizedBox(width: 8),
             OutlinedButton.icon(
-              onPressed: _pickFile,
-              icon: const Icon(Icons.attach_file),
-              label: const Text('ファイル'),
-            ),
+                onPressed: _pickFile, icon: const Icon(Icons.attach_file), label: const Text('ファイル')),
           ],
         ),
         if (_pickedName != null)
@@ -262,13 +282,12 @@ class _SendScreenState extends State<SendScreen> {
                 const Icon(Icons.insert_drive_file, size: 18),
                 const SizedBox(width: 6),
                 Expanded(
-                  child: Text('$_pickedName (${_pickedBytes?.length ?? 0}B)',
-                      overflow: TextOverflow.ellipsis),
-                ),
+                    child: Text('$_pickedName (${_fmtSize(_pickedSize)})', overflow: TextOverflow.ellipsis)),
                 IconButton(
                   onPressed: () => setState(() {
+                    _pickedPath = null;
                     _pickedName = null;
-                    _pickedBytes = null;
+                    _pickedSize = 0;
                   }),
                   icon: const Icon(Icons.clear),
                 ),
@@ -278,13 +297,9 @@ class _SendScreenState extends State<SendScreen> {
         const Divider(height: 32),
         Row(
           children: [
-            Expanded(
-              child: _dropdown('グリッド', _grid, _grids, (v) => setState(() => _grid = v!)),
-            ),
+            Expanded(child: _dropdown('グリッド', _grid, _grids, (v) => setState(() => _grid = v!))),
             const SizedBox(width: 12),
-            Expanded(
-              child: _dropdown('EC', _ec, _ecLevels, (v) => setState(() => _ec = v!)),
-            ),
+            Expanded(child: _dropdown('EC', _ec, _ecLevels, (v) => setState(() => _ec = v!))),
           ],
         ),
         const SizedBox(height: 12),
@@ -293,23 +308,18 @@ class _SendScreenState extends State<SendScreen> {
             const Text('FPS'),
             Expanded(
               child: Slider(
-                value: _fps.toDouble(),
-                min: 3,
-                max: 20,
-                divisions: 17,
-                label: '$_fps',
-                onChanged: (v) => setState(() => _fps = v.round()),
-              ),
+                  value: _fps.toDouble(),
+                  min: 3,
+                  max: 20,
+                  divisions: 17,
+                  label: '$_fps',
+                  onChanged: (v) => setState(() => _fps = v.round())),
             ),
             Text('$_fps'),
           ],
         ),
         const SizedBox(height: 16),
-        FilledButton.icon(
-          onPressed: _start,
-          icon: const Icon(Icons.play_arrow),
-          label: const Text('送信開始'),
-        ),
+        FilledButton.icon(onPressed: _start, icon: const Icon(Icons.play_arrow), label: const Text('送信開始')),
         if (_status.isNotEmpty) ...[
           const SizedBox(height: 12),
           Text(_status, style: Theme.of(context).textTheme.bodySmall),
@@ -328,7 +338,14 @@ class _SendScreenState extends State<SendScreen> {
   }
 }
 
-/// grid のセルに QR モジュール行列を描画する。各セルは 8% の quiet zone を確保。
+String _fmtSize(int n) {
+  if (n >= 1024 * 1024 * 1024) return '${(n / 1024 / 1024 / 1024).toStringAsFixed(2)}GB';
+  if (n >= 1024 * 1024) return '${(n / 1024 / 1024).toStringAsFixed(1)}MB';
+  if (n >= 1024) return '${(n / 1024).toStringAsFixed(1)}KB';
+  return '${n}B';
+}
+
+/// grid のセルに QR モジュール行列を描画 (各セル 8% quiet zone)。
 class _QrGridPainter extends CustomPainter {
   final List<QrMatrix> mats;
   final int rows;
@@ -337,14 +354,11 @@ class _QrGridPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final white = Paint()..color = Colors.white;
-    canvas.drawRect(Offset.zero & size, white);
+    canvas.drawRect(Offset.zero & size, Paint()..color = Colors.white);
     if (mats.isEmpty) return;
-
     final cellW = size.width / cols;
     final cellH = size.height / rows;
     final black = Paint()..color = Colors.black;
-
     for (int r = 0; r < rows; r++) {
       for (int c = 0; c < cols; c++) {
         final i = r * cols + c;
@@ -359,15 +373,13 @@ class _QrGridPainter extends CustomPainter {
         final qrPx = moduleSize * n;
         final ox = c * cellW + (cellW - qrPx) / 2;
         final oy = r * cellH + (cellH - qrPx) / 2;
-
         final path = Path();
         final mod = m.modules;
         for (int y = 0; y < n; y++) {
           final rowBase = y * n;
           for (int x = 0; x < n; x++) {
             if (mod[rowBase + x] == 1) {
-              path.addRect(Rect.fromLTWH(
-                  ox + x * moduleSize, oy + y * moduleSize, moduleSize, moduleSize));
+              path.addRect(Rect.fromLTWH(ox + x * moduleSize, oy + y * moduleSize, moduleSize, moduleSize));
             }
           }
         }

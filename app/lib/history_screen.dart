@@ -98,27 +98,41 @@ class _ViewerPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: Text(item.name)),
-      body: FutureBuilder<Uint8List?>(
+    final file = HistoryStore.instance.receivedFile(item);
+    Widget body;
+    if (file == null) {
+      body = const Center(child: Text('ファイルが見つかりません'));
+    } else if (item.type.startsWith('image/')) {
+      // 画像は Image.file でストリーム表示 (大きくてもメモリに全読みしない)。
+      body = Center(child: InteractiveViewer(child: Image.file(file)));
+    } else if (item.type.startsWith('text/') && item.size <= 1024 * 1024) {
+      body = FutureBuilder<Uint8List?>(
         future: HistoryStore.instance.readReceived(item),
         builder: (context, snap) {
           if (!snap.hasData || snap.data == null) {
             return const Center(child: CircularProgressIndicator());
           }
-          final bytes = snap.data!;
-          if (item.type.startsWith('image/')) {
-            return Center(child: InteractiveViewer(child: Image.memory(bytes)));
-          }
-          if (item.type.startsWith('text/')) {
-            return SingleChildScrollView(
-              padding: const EdgeInsets.all(16),
-              child: SelectableText(String.fromCharCodes(bytes)),
-            );
-          }
-          return Center(child: Text('バイナリ ${_fmtSize(bytes.length)}'));
+          return SingleChildScrollView(
+            padding: const EdgeInsets.all(16),
+            child: SelectableText(String.fromCharCodes(snap.data!)),
+          );
         },
-      ),
-    );
+      );
+    } else {
+      body = Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.check_circle, color: Colors.green, size: 48),
+            const SizedBox(height: 8),
+            Text(item.name),
+            Text('${item.type}  ${_fmtSize(item.size)}'),
+            const SizedBox(height: 8),
+            Text('保存先: ${file.path}', style: Theme.of(context).textTheme.bodySmall),
+          ],
+        ),
+      );
+    }
+    return Scaffold(appBar: AppBar(title: Text(item.name)), body: body);
   }
 }
