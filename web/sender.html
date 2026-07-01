@@ -64,6 +64,7 @@
   <div class="toolbar">
     <textarea id="payloadText" placeholder="ペイロード (テキスト入力 or ファイル選択)"></textarea>
     <input type="file" id="payloadFile">
+    <input type="text" id="envLabel" placeholder="環境ラベル (例: 50cm/明室/iPhone)" title="スイープログに記録される。距離・明るさ・端末などを書く" style="min-width:200px">
     <label>グリッド: <select id="grid">
       <option value="1x1">1×1</option>
       <option value="1x2" selected>1×2</option>
@@ -525,13 +526,14 @@
     // 受信側の多グリッド解像度を下げた (jsQR 軽量化=scanFps↑) のに合わせ、多グリッドは
     // タイルを低版に振って「各タイルを確実に読む」方向へ。QR/frame をタイル数まで上げるのが狙い。
     // 初回スイープで 1x2/2x2 の可読性は確認済み。ここは throughput 最適点を探る。
+    // Phase 2: 距離ごとにグリッド横断で比較 (近づくほど多グリッドが有利になるはず)。
     const SWEEP_PROFILES = [
-      { grid: "1x1", ec: "M", packet: 540, fps: 12 },  // 基準 (v18, 手動 ~49s)
-      { grid: "1x2", ec: "M", packet: 300, fps: 12 },  // 2枚並列・中版 (各タイル確実に)
-      { grid: "2x2", ec: "M", packet: 180, fps: 10 },  // 4枚並列・低版 (QR/frame を 4 に近づける)
-      { grid: "2x2", ec: "M", packet: 300, fps: 10 },  // 4枚並列・中版 (packet 大きめと比較)
+      { grid: "1x1", ec: "M", packet: 540, fps: 12 },  // 頑丈側の基準
+      { grid: "1x2", ec: "M", packet: 300, fps: 12 },  // 現距離ベスト (36s)
+      { grid: "2x2", ec: "M", packet: 180, fps: 10 },  // 近距離で本領を出すか
+      { grid: "2x2", ec: "M", packet: 300, fps: 10 },  // 近距離なら大packetも読めるか
     ];
-    const SWEEP_TIMEOUT_MS = 150000;            // 1プロファイルの上限 (150s)
+    const SWEEP_TIMEOUT_MS = 90000;             // 1プロファイルの上限 (90s。要件60s超は勝者になり得ないので十分+発熱抑制)
     const SWEEP_NOPROGRESS_MS = 20000;          // この時間 unique=0 のままなら見切って次へ (密すぎ判定)
     let lastPayloadLen = 0;
 
@@ -689,7 +691,9 @@
           ? `OK\ttransfer=${r.transferSec}s\twall=${r.wallSec}s\t${r.kbps}KB/s\tscanFps=${r.scanFps}\tQR/frame=${r.readsPerFrame}\tunique=${r.unique}/${r.neededApprox}`
           : `NG(${r.gaveUp ? "見切り-密すぎ" : r.timeout ? "timeout" : "abort"})\twall=${r.wallSec}s\tunique=${r.unique}/${r.neededApprox}\tscanFps=${r.scanFps}\tQR/frame=${r.readsPerFrame}`)
       );
+      const env = ($("envLabel").value || "").trim();
       const head = `=== beyond-qr プロファイルスイープ ${done ? "(完了)" : "(進行中)"} ===\n` +
+        (env ? `環境: ${env}\n` : "") +
         `payload=${lastPayloadLen}B  profiles=${results.length}  timeout=${SWEEP_TIMEOUT_MS / 1000}s  noprogress=${SWEEP_NOPROGRESS_MS / 1000}s\n`;
       try { await fetch("/log", { method: "POST", headers: { "Content-Type": "text/plain" }, body: head + rows.join("\n") + "\n" }); } catch (e) { /* noop */ }
     }

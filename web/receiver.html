@@ -19,7 +19,7 @@
     main { flex: 1; display: flex; flex-direction: column; padding: 1em; gap: 0.8em; }
     .stage {
       position: relative;
-      width: 100%; max-width: 480px; aspect-ratio: 1/1;
+      width: 100%; max-width: 200px; aspect-ratio: 1/1;
       align-self: center;
       background: #000; border: 1px solid #444; overflow: hidden;
     }
@@ -76,27 +76,36 @@
     <h1>beyond-qr Receiver (Phase 1: QR + Fountain)</h1>
   </header>
   <main>
-    <div class="stage">
-      <video id="preview" autoplay playsinline muted></video>
-      <canvas id="captureCanvas" style="display:none"></canvas>
-    </div>
     <div class="controls">
       <button id="startBtn">カメラ開始</button>
       <button id="stopBtn" class="secondary" disabled>停止</button>
       <button id="sendLogBtn" class="secondary" disabled>ログ送信</button>
-      <label>グリッド: <select id="grid">
-        <option value="1x1" selected>1×1</option>
-        <option value="1x2">1×2</option>
+      <label><input type="checkbox" id="followSender" checked> 送信側に追従</label>
+      <label title="複数プロファイルを連続計測。復元しても止まらず runId 変化で次パターンを測る"><input type="checkbox" id="sweepRecv"> スイープ受信</label>
+      <label title="多グリッドの1タイル目標px。大きいほど読めるが jsQR が重く scanFps が下がる (1x1 は無関係)">タイルpx:
+        <select id="tilePx">
+          <option value="400">400</option>
+          <option value="460" selected>460</option>
+          <option value="520">520</option>
+          <option value="560">560</option>
+          <option value="620">620</option>
+          <option value="700">700</option>
+        </select></label>
+      <label>グリッド(手動時): <select id="grid">
+        <option value="1x1">1×1</option>
+        <option value="1x2" selected>1×2</option>
         <option value="2x2">2×2</option>
         <option value="2x3">2×3</option>
         <option value="3x3">3×3</option>
       </select></label>
-      <label><input type="checkbox" id="followSender" checked> 送信側に追従</label>
-      <label title="複数プロファイルを連続計測。復元しても止まらず runId 変化で次パターンを測る"><input type="checkbox" id="sweepRecv"> スイープ受信</label>
     </div>
     <div class="panel" id="senderInfo">送信側: 未検出</div>
     <div class="panel" id="sweepPanelRecv" style="display:none"></div>
     <div class="panel" id="timing">待機中</div>
+    <div class="stage">
+      <video id="preview" autoplay playsinline muted></video>
+      <canvas id="captureCanvas" style="display:none"></canvas>
+    </div>
     <div class="panel" id="progress">
       <div>待機中</div>
       <div class="progress-bar"><div id="progressBar" style="width: 0%"></div></div>
@@ -443,9 +452,10 @@
       // 多グリッドはタイルが低版なので 1080² は過剰で、jsQR を N 回走らせる分だけ scanFps を落とす。
       // タイル ~460px を狙って総解像度を下げ、デコード速度(scanFps)を優先する。
       const single = Math.max(rows, cols) === 1;
+      const tilePx = parseInt($("tilePx").value) || 460;   // 多グリッドの1タイル目標px (可変ツマミ)
       const targetSize = single
         ? Math.min(1280, Math.max(640, cropSize))
-        : Math.min(1280, Math.max(720, 460 * Math.max(rows, cols)));
+        : Math.min(1440, Math.max(720, tilePx * Math.max(rows, cols)));
       captureCanvas.width = targetSize;
       captureCanvas.height = targetSize;
       const ctx = captureCanvas.getContext("2d", { willReadFrequently: true });
