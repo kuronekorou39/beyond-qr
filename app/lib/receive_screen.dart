@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+import 'history_store.dart';
 import 'src/rust/api/fountain.dart';
 
 /// 送信側の wrapPayload を戻す: [uint32be headerLen][json header][body]。
@@ -111,6 +112,10 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
           final p = _decoder!.payload();
           if (p != null) {
             _result = _unwrap(p);
+            final r = _result;
+            if (r != null) {
+              HistoryStore.instance.addReceived(r.name, r.type, r.body);
+            }
             WakelockPlus.disable();
             break;
           }

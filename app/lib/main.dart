@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
 import 'src/rust/frb_generated.dart';
+import 'history_store.dart';
 import 'send_screen.dart';
 import 'receive_screen.dart';
+import 'history_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await RustLib.init();
+  await HistoryStore.instance.init();
   runApp(const BeyondQrApp());
 }
 
@@ -52,42 +55,6 @@ class _HomeShellState extends State<HomeShell> {
           NavigationDestination(icon: Icon(Icons.history), label: '履歴'),
         ],
       ),
-    );
-  }
-}
-
-class _Placeholder extends StatelessWidget {
-  final IconData icon;
-  final String title;
-  final String note;
-  const _Placeholder(
-      {required this.icon, required this.title, required this.note});
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 64, color: Theme.of(context).colorScheme.primary),
-          const SizedBox(height: 12),
-          Text(title, style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 6),
-          Text(note, style: Theme.of(context).textTheme.bodySmall),
-        ],
-      ),
-    );
-  }
-}
-
-class HistoryScreen extends StatelessWidget {
-  const HistoryScreen({super.key});
-  @override
-  Widget build(BuildContext context) {
-    return const _Placeholder(
-      icon: Icons.history,
-      title: '履歴',
-      note: '受信成功データ / 送信試行の記録 (実装予定)',
     );
   }
 }

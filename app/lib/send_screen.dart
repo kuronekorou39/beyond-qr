@@ -2,9 +2,11 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:file_selector/file_selector.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+import 'history_store.dart';
 import 'src/rust/api/fountain.dart';
 import 'src/rust/api/qr.dart';
 
@@ -40,8 +42,9 @@ class SendScreen extends StatefulWidget {
 class _SendScreenState extends State<SendScreen> {
   final _textCtrl = TextEditingController();
   final _picker = ImagePicker();
-  String? _imgName;
-  Uint8List? _imgBytes;
+  String? _pickedName;
+  Uint8List? _pickedBytes;
+  String _pickedType = 'application/octet-stream';
 
   String _grid = '1x2';
   String _ec = 'M';
@@ -66,12 +69,24 @@ class _SendScreenState extends State<SendScreen> {
     if (x == null) return;
     final bytes = await x.readAsBytes();
     setState(() {
-      _imgName = x.name;
-      _imgBytes = bytes;
+      _pickedName = x.name;
+      _pickedBytes = bytes;
+      _pickedType = _imageMime(x.name);
     });
   }
 
-  String _mimeOf(String name) {
+  Future<void> _pickFile() async {
+    final f = await openFile();
+    if (f == null) return;
+    final bytes = await f.readAsBytes();
+    setState(() {
+      _pickedName = f.name;
+      _pickedBytes = bytes;
+      _pickedType = f.mimeType ?? 'application/octet-stream';
+    });
+  }
+
+  String _imageMime(String name) {
     final n = name.toLowerCase();
     if (n.endsWith('.png')) return 'image/png';
     if (n.endsWith('.webp')) return 'image/webp';
@@ -80,8 +95,8 @@ class _SendScreenState extends State<SendScreen> {
   }
 
   Uint8List _buildPayload() {
-    if (_imgBytes != null) {
-      return _wrapPayload(_imgName ?? 'image.jpg', _mimeOf(_imgName ?? ''), _imgBytes!);
+    if (_pickedBytes != null) {
+      return _wrapPayload(_pickedName ?? 'file.bin', _pickedType, _pickedBytes!);
     }
     final body = Uint8List.fromList(utf8.encode(_textCtrl.text));
     return _wrapPayload('message.txt', 'text/plain;charset=utf-8', body);
@@ -100,6 +115,11 @@ class _SendScreenState extends State<SendScreen> {
     _oti = enc.otiBytes();
     _total = enc.packetCount();
     _cursor = 0;
+
+    // 送信試行を履歴に記録 (オフラインなので成否は不明=試行記録)
+    final sentName = _pickedBytes != null ? (_pickedName ?? 'file.bin') : 'message.txt';
+    final sentType = _pickedBytes != null ? _pickedType : 'text/plain;charset=utf-8';
+    HistoryStore.instance.addSent(sentName, sentType, payload.length, _grid, _ec);
 
     try {
       await WakelockPlus.enable();
@@ -199,7 +219,7 @@ class _SendScreenState extends State<SendScreen> {
           controller: _textCtrl,
           maxLines: 3,
           decoration: const InputDecoration(
-            labelText: 'テキスト (または画像を選択)',
+            labelText: 'テキスト (または画像/ファイルを選択)',
             border: OutlineInputBorder(),
           ),
         ),
@@ -209,24 +229,37 @@ class _SendScreenState extends State<SendScreen> {
             OutlinedButton.icon(
               onPressed: _pickImage,
               icon: const Icon(Icons.image),
-              label: const Text('画像を選択'),
+              label: const Text('画像'),
             ),
             const SizedBox(width: 8),
-            if (_imgName != null)
-              Expanded(
-                child: Text('$_imgName (${_imgBytes?.length ?? 0}B)',
-                    overflow: TextOverflow.ellipsis),
-              ),
-            if (_imgName != null)
-              IconButton(
-                onPressed: () => setState(() {
-                  _imgName = null;
-                  _imgBytes = null;
-                }),
-                icon: const Icon(Icons.clear),
-              ),
+            OutlinedButton.icon(
+              onPressed: _pickFile,
+              icon: const Icon(Icons.attach_file),
+              label: const Text('ファイル'),
+            ),
           ],
         ),
+        if (_pickedName != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Row(
+              children: [
+                const Icon(Icons.insert_drive_file, size: 18),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text('$_pickedName (${_pickedBytes?.length ?? 0}B)',
+                      overflow: TextOverflow.ellipsis),
+                ),
+                IconButton(
+                  onPressed: () => setState(() {
+                    _pickedName = null;
+                    _pickedBytes = null;
+                  }),
+                  icon: const Icon(Icons.clear),
+                ),
+              ],
+            ),
+          ),
         const Divider(height: 32),
         Row(
           children: [
