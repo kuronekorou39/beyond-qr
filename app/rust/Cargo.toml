@@ -9,6 +9,7 @@ crate-type = ["cdylib", "staticlib"]
 [dependencies]
 flutter_rust_bridge = "=2.12.0"
 beyond-qr-fountain = { path = "../../fountain" }
+beyond-qr-vcode = { path = "../../vcode" }
 # QR 生成 (モジュール行列のみ必要。image/svg レンダラは不要なので default-features off)。
 qrcode = { version = "0.14", default-features = false }
 

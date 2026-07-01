@@ -95,6 +95,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "beyond-qr-vcode"
+version = "0.1.0"
+
+[[package]]
 name = "bitflags"
 version = "2.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -587,6 +591,7 @@ name = "rust_lib_beyond_qr"
 version = "0.1.0"
 dependencies = [
  "beyond-qr-fountain",
+ "beyond-qr-vcode",
  "flutter_rust_bridge",
  "qrcode",
 ]

@@ -18,6 +18,8 @@
 //! この v0 デコーダは「理想チャネル」(スケール整数倍・歪みなしのビットマップ) を仮定する。
 //! 実カメラ画像からの検出・射影補正・サンプリングは次段で別モジュールとして実装する。
 
+pub mod scan;
+
 /// 上下ストリップの高さ (セル)
 pub const STRIP_H: usize = 6;
 /// コーナーマーカーの一辺 (セル)
@@ -199,7 +201,7 @@ pub struct DecodedFrame {
 }
 
 #[derive(Clone, Copy)]
-enum Corner {
+pub(crate) enum Corner {
     TopLeft,
     TopRight,
     BottomLeft,
@@ -208,7 +210,7 @@ enum Corner {
 
 /// コーナーマーカーのパターン。外周 1 セルは全コーナー共通で黒 (検出用)、
 /// 内部 4x4 はコーナーごとに異なる (将来の回転判定用)。
-fn corner_black(which: Corner, r: usize, c: usize) -> bool {
+pub(crate) fn corner_black(which: Corner, r: usize, c: usize) -> bool {
     let border = r == 0 || r == CORNER - 1 || c == 0 || c == CORNER - 1;
     if border {
         return true;
@@ -222,7 +224,7 @@ fn corner_black(which: Corner, r: usize, c: usize) -> bool {
 }
 
 /// 4 コーナーの (種別, 左上セル座標)
-fn corner_origins(w: usize, h: usize) -> [(Corner, usize, usize); 4] {
+pub(crate) fn corner_origins(w: usize, h: usize) -> [(Corner, usize, usize); 4] {
     [
         (Corner::TopLeft, 0, 0),
         (Corner::TopRight, 0, w - CORNER),
@@ -310,6 +312,10 @@ pub fn encode_frame(header: &FrameHeader, blocks: &[Vec<u8>], scale: usize) -> B
     bm
 }
 
+/// コーナーマーカーの許容一致率。実カメラ経由では境界セルの誤りが出るため
+/// 完全一致ではなくこの比率で判定する (CRC が最終防衛線なので緩くてよい)。
+const CORNER_MATCH_MIN: f32 = 0.85;
+
 /// 理想チャネルのビットマップからフレームをデコードする。
 /// 壊れたブロックは None として返し、読めたブロックだけ回収する。
 pub fn decode_frame(bm: &Bitmap, scale: usize) -> Result<DecodedFrame, FrameError> {
@@ -317,25 +323,38 @@ pub fn decode_frame(bm: &Bitmap, scale: usize) -> Result<DecodedFrame, FrameErro
         return Err(FrameError::BadDimensions);
     }
     let (w, h) = (bm.w / scale, bm.h / scale);
+    decode_from_sampler(&|r, c| bm.sample_cell(scale, r, c), w, h)
+}
+
+/// セル (row, col) → 黒 のサンプラーからフレームをデコードする共通経路。
+/// 理想ビットマップ (decode_frame) と実画像スキャン (scan::scan_frame) が共用する。
+pub(crate) fn decode_from_sampler(
+    sample: &dyn Fn(usize, usize) -> bool,
+    w: usize,
+    h: usize,
+) -> Result<DecodedFrame, FrameError> {
     if w < 2 * CORNER + 1 || h < 2 * STRIP_H + 1 {
         return Err(FrameError::BadDimensions);
     }
 
-    // 四隅マーカー検証 (理想チャネルなので完全一致を要求)
+    // 四隅マーカー検証 (一致率で判定)
+    let mut matched = 0usize;
+    let total = 4 * CORNER * CORNER;
     for (which, or, oc) in corner_origins(w, h) {
         for r in 0..CORNER {
             for c in 0..CORNER {
-                if bm.sample_cell(scale, or + r, oc + c) != corner_black(which, r, c) {
-                    return Err(FrameError::CornerMismatch);
+                if sample(or + r, oc + c) == corner_black(which, r, c) {
+                    matched += 1;
                 }
             }
         }
     }
+    if (matched as f32) < CORNER_MATCH_MIN * total as f32 {
+        return Err(FrameError::CornerMismatch);
+    }
 
     // ヘッダ: 各コピーを順に試し、最初に CRC が通ったものを採用
-    let hdr_cell_bits: Vec<bool> = header_cells(w)
-        .map(|(r, c)| bm.sample_cell(scale, r, c))
-        .collect();
+    let hdr_cell_bits: Vec<bool> = header_cells(w).map(|(r, c)| sample(r, c)).collect();
     let copy_bits = HEADER_LEN * 8;
     let header = (0..hdr_cell_bits.len() / copy_bits)
         .find_map(|k| {
@@ -354,7 +373,7 @@ pub fn decode_frame(bm: &Bitmap, scale: usize) -> Result<DecodedFrame, FrameErro
         .map(|bi| {
             let (or, oc) = layout.block_origin(bi);
             let bits: Vec<bool> = (0..layout.block * layout.block)
-                .map(|i| bm.sample_cell(scale, or + i / layout.block, oc + i % layout.block))
+                .map(|i| sample(or + i / layout.block, oc + i % layout.block))
                 .collect();
             let bytes = bits_to_bytes(&bits);
             let (payload, crc) = bytes.split_at(layout.block_payload_len());
@@ -498,7 +517,12 @@ mod tests {
         let header = test_header(11);
         let blocks = test_blocks(20, Layout::V0.block_payload_len(), 0x33);
         let mut bm = encode_frame(&header, &blocks, 1);
-        bm.set(0, 0, 255); // TL マーカーの角を白に
+        // TL マーカー全体を白塗り (一致率 85% を下回る)
+        for y in 0..CORNER {
+            for x in 0..CORNER {
+                bm.set(x, y, 255);
+            }
+        }
         assert_eq!(decode_frame(&bm, 1).unwrap_err(), FrameError::CornerMismatch);
     }
 }

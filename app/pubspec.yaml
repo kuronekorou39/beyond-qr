@@ -40,6 +40,8 @@ dependencies:
   wakelock_plus: ^1.6.1
   screen_brightness: ^2.1.11
   mobile_scanner: ^7.2.0
+  # vcode 受信用 (生 YUV フレームが必要なため mobile_scanner とは別に使用)
+  camera: ^0.11.0
   image_picker: ^1.2.3
   file_selector: ^1.1.0
   path_provider: ^2.1.6

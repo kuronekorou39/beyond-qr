@@ -4,6 +4,8 @@ import 'history_store.dart';
 import 'send_screen.dart';
 import 'receive_screen.dart';
 import 'history_screen.dart';
+import 'vcode_send_screen.dart';
+import 'vcode_receive_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -39,7 +41,13 @@ class HomeShell extends StatefulWidget {
 class _HomeShellState extends State<HomeShell> {
   int _index = 0;
 
-  static const _screens = [SendScreen(), ReceiveScreen(), HistoryScreen()];
+  static const _screens = [
+    SendScreen(),
+    ReceiveScreen(),
+    VcodeSendScreen(),
+    VcodeReceiveScreen(),
+    HistoryScreen(),
+  ];
 
   @override
   Widget build(BuildContext context) {
@@ -52,6 +60,8 @@ class _HomeShellState extends State<HomeShell> {
         destinations: const [
           NavigationDestination(icon: Icon(Icons.qr_code_2), label: '送信'),
           NavigationDestination(icon: Icon(Icons.photo_camera), label: '受信'),
+          NavigationDestination(icon: Icon(Icons.grid_on), label: 'V送信'),
+          NavigationDestination(icon: Icon(Icons.center_focus_strong), label: 'V受信'),
           NavigationDestination(icon: Icon(Icons.history), label: '履歴'),
         ],
       ),
