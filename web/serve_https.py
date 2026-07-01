@@ -107,7 +107,8 @@ LOG_DIR = Path(__file__).parent / "client_logs"
 # 送受信間の簡易バックチャネル (同一 LAN 前提の開発用ブラックボード)。
 # 受信側が読み取り状況を POST /state/receiver、送信側が設定を POST /state/sender、
 # 双方が GET /state で互いの状態を取得し、表示設定の助言・適応調整に使う。
-# HTTPServer は単一スレッドで逐次処理されるためロック不要。
+# サーバはスレッド化 (ThreadingHTTPSServer) だが、_STATE はキー固定 ("sender"/"receiver") で
+# 値まるごとの差し替えしかせず、GET も {**_STATE} でスナップショットを取るため GIL 下で安全。
 _STATE: dict[str, dict] = {"sender": {}, "receiver": {}}
 MAX_BODY = 16 * 1024 * 1024  # POST ボディ上限 (capture の PNG を許容しつつ暴走を防ぐ)
 
@@ -216,6 +217,26 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(b"OK")
 
 
+class ThreadingHTTPSServer(http.server.ThreadingHTTPServer):
+    """スレッド化 HTTPS サーバ。
+
+    スマホは HTTPS 接続を途中でブツッと切ることが日常的にあり (画面ロック・タブ離脱・
+    Wi-Fi 瞬断)、そのたびに ConnectionResetError / SSLError が上がる。単一スレッドだと
+    1 クライアントの切断待ちで他がブロックされ、切断トレースバックでコンソールも埋まる。
+    スレッド化して並行処理し、切断系の例外はトレースバックを出さず握りつぶす。"""
+
+    daemon_threads = True
+
+    def handle_error(self, request, client_address) -> None:  # noqa: ANN001
+        exc = sys.exc_info()[1]
+        if isinstance(
+            exc,
+            (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, ssl.SSLError, TimeoutError),
+        ):
+            return  # モバイルの接続切断は無視 (サーバは落とさない)
+        super().handle_error(request, client_address)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8443)
@@ -240,7 +261,7 @@ def main() -> None:
     os.chdir(web_dir)
     print(f"[serve] root={web_dir}")
 
-    server = http.server.HTTPServer(("0.0.0.0", args.port), Handler)
+    server = ThreadingHTTPSServer(("0.0.0.0", args.port), Handler)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(certfile=str(CERT_FILE), keyfile=str(KEY_FILE))
     server.socket = context.wrap_socket(server.socket, server_side=True)

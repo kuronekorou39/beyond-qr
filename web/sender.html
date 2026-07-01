@@ -23,8 +23,11 @@
     .feedback-bar .muted { color: #999; }
     .feedback-bar .advice { font-weight: bold; }
     .feedback-bar button { background: #fc4; border: none; border-radius: 4px; padding: 0.2em 0.6em; margin-left: 0.3em; cursor: pointer; font-size: 0.9em; }
-    .stage { display: flex; justify-content: center; align-items: center; padding: 2vmin; background: #fff; }
-    #qrCanvas { width: min(82vw, 82vh); height: min(82vw, 82vh); image-rendering: pixelated; background: #fff; }
+    :root { --qr-size: 90vmin; }
+    .stage { display: flex; justify-content: center; align-items: center; padding: 1vmin; background: #fff; }
+    #qrCanvas { width: var(--qr-size); height: var(--qr-size); image-rendering: pixelated; background: #fff; }
+    .size-group { display: inline-flex; gap: 4px; align-items: center; }
+    .size-group input[type="range"] { width: 110px; vertical-align: middle; }
     .status {
       position: fixed; bottom: 0; left: 0; right: 0;
       padding: 0.3em 1em; background: #f0f0f0; border-top: 1px solid #ccc;
@@ -33,12 +36,28 @@
     .help { max-width: 820px; margin: 0 auto; padding: 1em; font-size: 0.9em; color: #555; }
     .fps-group { display: inline-flex; gap: 2px; align-items: center; }
     .probe-results {
-      padding: 0.5em 1em; background: #fffbe6; border-bottom: 1px solid #e6d98a; font-size: 0.85em;
+      position: fixed; top: 8px; right: 8px; z-index: 100;
+      max-width: min(440px, 92vw); max-height: 84vh; overflow: auto;
+      padding: 0 1em 0.6em; background: #fffbe6; border: 1px solid #e6d98a;
+      border-radius: 6px; box-shadow: 0 4px 18px rgba(0,0,0,0.28); font-size: 0.85em;
     }
+    .probe-head { position: sticky; top: 0; display: flex; justify-content: flex-end; padding-top: 0.4em; background: #fffbe6; }
+    .probe-close { background: #e6d98a; border: none; border-radius: 4px; width: 1.8em; height: 1.8em; line-height: 1; font-weight: bold; cursor: pointer; }
     .probe-results table { border-collapse: collapse; margin-top: 0.3em; }
     .probe-results th, .probe-results td { border: 1px solid #ddd; padding: 2px 8px; text-align: center; }
     .probe-results tr.best { background: #d8f5d8; font-weight: bold; }
-    .probe-results button { background: #fc4; border: none; border-radius: 4px; padding: 0.15em 0.6em; cursor: pointer; font-size: 0.9em; }
+    .probe-results button[data-apply] { background: #fc4; border: none; border-radius: 4px; padding: 0.15em 0.6em; cursor: pointer; font-size: 0.9em; }
+    .sweep-panel {
+      position: fixed; top: 8px; left: 8px; z-index: 100;
+      max-width: min(460px, 46vw); max-height: 86vh; overflow: auto;
+      padding: 0.4em 0.8em 0.6em; background: #eef6ff; border: 1px solid #9cc3e6;
+      border-radius: 6px; box-shadow: 0 4px 18px rgba(0,0,0,0.28); font-size: 0.82em;
+    }
+    .sweep-panel .sweep-head { position: sticky; top: 0; background: #eef6ff; padding: 0.3em 0; }
+    .sweep-panel table { border-collapse: collapse; margin-top: 0.3em; }
+    .sweep-panel th, .sweep-panel td { border: 1px solid #cdd; padding: 1px 6px; text-align: center; }
+    .sweep-panel tr.best { background: #d8f5d8; font-weight: bold; }
+    .sweep-panel tr.fail { color: #c44; }
   </style>
 </head>
 <body>
@@ -67,15 +86,24 @@
       <option value="H" selected>H (高訂正)</option>
     </select></label>
     <label>QR Ver: <input type="number" id="qrVersion" value="25" min="10" max="40" style="width: 60px"></label>
+    <label class="size-group">表示:
+      <input type="range" id="dispSize" min="40" max="100" step="1" value="90">
+      <span id="dispSizeVal">90%</span>
+    </label>
     <button id="startBtn">送信開始</button>
     <button id="stopBtn" class="secondary" disabled>停止</button>
     <button id="probeBtn" class="secondary" title="grid×FPS を総当りで試し最適設定を探す">調べる(プローブ)</button>
+    <button id="sweepBtn" class="secondary" title="入力した実画像を grid×FPS で総当りし、各設定で復元完了まで計測 (無人スイープ)">実データスイープ</button>
   </div>
   <div class="feedback-bar">
     <label title="効率が下がったら自動でグリッドを下げる"><input type="checkbox" id="autoAdjust"> 自動調整</label>
     <span id="feedback" class="muted">受信側 未接続</span>
   </div>
-  <div id="probeResults" class="probe-results" style="display:none"></div>
+  <div id="probeResults" class="probe-results" style="display:none">
+    <div class="probe-head"><button id="probeClose" class="probe-close" title="閉じる">×</button></div>
+    <div id="probeBody"></div>
+  </div>
+  <div id="sweepPanel" class="sweep-panel" style="display:none"></div>
   <div class="stage">
     <canvas id="qrCanvas" width="1080" height="1080"></canvas>
   </div>
@@ -108,9 +136,14 @@
     let startSeq = 0;           // start() 再入ガード (世代カウンタ)
     let currentPacketSize = 500;
     let probing = false, probeConfig = null;  // プローブ(調べる)モード
+    let sweeping = false, sweepRunId = 0;     // 実データ自動スイープ (runId で受信側と1パターンを同期)
     const GRID_ORDER = ["1x1", "1x2", "2x2", "2x3", "3x3"]; // セル数 昇順
     // パケットサイズはグリッドに連動して縮小する (グリッドが大きいほど 1 枚の QR を低版・小さく保つ)。
-    const packetSizeFor = (rows, cols) => Math.max(120, Math.round(500 / Math.max(rows, cols)));
+    // 上限 540: 実機計測でこの環境の 1x1 読み取り上限は v18。OTI 12B 込みで v18@EC=M の容量
+    // 564B に収まる 552B が最大なので、少し余裕を見て 540B で頭打ち (throughput 最大化)。
+    // 注意: この上限は EC=M 前提。EC=H だと v18 容量が 310B しかなく容量超過するので M で送ること。
+    // (2x2 以降は元々 250B 以下なので影響なし)
+    const packetSizeFor = (rows, cols) => Math.max(120, Math.min(540, Math.round(500 / Math.max(rows, cols))));
 
     const setStatus = (msg) => { status.textContent = msg; };
     const pct = (x) => Math.round(x * 100);
@@ -161,7 +194,7 @@
       const { rows, cols } = gridDims();
       const n = rows * cols;
       const total = encoder.packetCount();
-      const version = parseInt($("qrVersion").value);
+      const version = sweeping ? 0 : parseInt($("qrVersion").value);  // スイープ中は自動最小版 (密度を最適化)
       const ecLevel = $("ecLevel").value;
 
       ctx.fillStyle = "#fff";
@@ -196,7 +229,7 @@
     }
 
     async function start() {
-      if (probing) return;                               // プローブ中は再エンコードしない
+      if (probing || sweeping) return;                   // プローブ/スイープ中は通常送信しない
       const mySeq = ++startSeq;                          // 再入ガード
       if (timer) { clearInterval(timer); timer = null; }
       await init();
@@ -234,14 +267,14 @@
     }
 
     function applyFps(v) {
-      if (probing) return;
+      if (probing || sweeping) return;
       $("fps").value = v;
       if (timer) { clearInterval(timer); timer = setInterval(renderFrame, 1000 / v); }
       if (encoder) postSenderState(!!timer);
     }
 
     function applyGrid(g) {
-      if (probing || !GRID_ORDER.includes(g)) return;
+      if (probing || sweeping || !GRID_ORDER.includes(g)) return;
       $("grid").value = g;
       poorSince = 0;
       if (timer) start().catch(e => setStatus(`error: ${e.message}`)); // 新グリッドで再エンコード (新 OTI → 受信側は自動 resync)
@@ -314,7 +347,7 @@
     }
 
     function maybeAutoAdjust() {
-      if (probing || !$("autoAdjust").checked || !timer || !recvState || recvState.recovered) { poorSince = 0; return; }
+      if (probing || sweeping || !$("autoAdjust").checked || !timer || !recvState || recvState.recovered) { poorSince = 0; return; }
       if (recvState.settling) { poorSince = 0; return; }       // 受信側が再同期直後の過渡期は評価しない
       if (performance.now() - lastAutoStepTs < 5000) return;   // 段下げ直後のクールダウン (過渡期 > これ)
       const eff = effOf(recvState);
@@ -355,14 +388,14 @@
     }
 
     async function runProbe() {
-      if (probing) return;
+      if (probing || sweeping) return;
       if (timer) { clearInterval(timer); timer = null; }   // 通常送信を止める
       probing = true;
       $("startBtn").disabled = true;
       $("stopBtn").disabled = true;
       $("probeBtn").disabled = true;
       $("probeResults").style.display = "block";
-      $("probeResults").innerHTML = "プローブ準備中... スマホで receiver のカメラを開始し、画面に向けてください";
+      $("probeBody").innerHTML = "プローブ準備中... スマホで receiver のカメラを開始し、画面に向けてください";
       const createdPoller = !statePollTimer;
       try {
         await init();
@@ -439,11 +472,14 @@
           `<td><button data-apply="1" data-grid="${r.grid}" data-fps="${r.fps}">この設定で送信</button></td></tr>`;
       }
       html += `</table>`;
-      $("probeResults").innerHTML = html;
+      $("probeBody").innerHTML = html;
     }
 
     $("startBtn").addEventListener("click", () => start().catch(e => setStatus(`error: ${e.message}`)));
-    $("stopBtn").addEventListener("click", stop);
+    $("stopBtn").addEventListener("click", () => {
+      if (sweeping) { sweeping = false; setStatus("スイープ中断要求 — 現在のパターンの後に停止します"); }
+      else stop();
+    });
     document.querySelectorAll("button.preset").forEach(b =>
       b.addEventListener("click", () => applyFps(parseInt(b.dataset.fps)))
     );
@@ -459,6 +495,195 @@
       if (!b) return;
       $("grid").value = b.dataset.grid; $("fps").value = b.dataset.fps;
       setStatus(`設定を適用: grid ${b.dataset.grid} @ ${b.dataset.fps}fps — ペイロードを入れて「送信開始」`);
+    });
+    $("probeClose").addEventListener("click", () => { $("probeResults").style.display = "none"; });
+
+    // ---- 表示サイズ (QR canvas の見かけサイズを vmin% で可変。localStorage に保存) ----
+    function applyDispSize(v) {
+      document.documentElement.style.setProperty("--qr-size", v + "vmin");
+      $("dispSizeVal").textContent = v + "%";
+    }
+    try { const saved = localStorage.getItem("beyondqr.dispSize"); if (saved) $("dispSize").value = saved; } catch (e) { /* 非対応可 */ }
+    applyDispSize($("dispSize").value);
+    $("dispSize").addEventListener("input", () => {
+      applyDispSize($("dispSize").value);
+      try { localStorage.setItem("beyondqr.dispSize", $("dispSize").value); } catch (e) { /* 非対応可 */ }
+    });
+
+    // ================= 実データ自動スイープ =================
+    // 入力した実画像を grid×FPS で総当りし、各パターンで「復元完了まで」を計測する。
+    // QR版は自動最小化 (renderFrame が sweeping 中は version 0)。受信側とは /state の runId で
+    // 1パターンの境界を同期 (grid 据え置きで FPS だけ変えると OTI が同一になるため、OTI では区切れない)。
+    // 1パターンが SWEEP_TIMEOUT_MS 内に復元できなければ TIMEOUT 記録して次へ。無人運用前提。
+    // ↓ この3つを編集すれば対象を変えられる。
+    // 3x3 は throughput 律速 (scanFps ~1.7 で 9×jsQR がスマホ CPU に追いつかず timeout) のため
+    // 一旦除外。まず 1x1 / 2x2 が安定して復元できることを確認してから再挑戦する。
+    const SWEEP_GRIDS = ["1x1", "2x2"];
+    const SWEEP_FPS = [3, 5, 8, 12, 15];
+    const SWEEP_REPEATS = 1;
+    const SWEEP_TIMEOUT_MS = 240000;            // 1パターンの上限 (4分)
+    let lastPayloadLen = 0;
+
+    function buildSweepPatterns() {
+      const pats = [];
+      for (let rep = 0; rep < SWEEP_REPEATS; rep++)
+        for (const g of SWEEP_GRIDS)
+          for (const f of SWEEP_FPS)
+            pats.push({ grid: g, fps: f, rep });
+      return pats;
+    }
+
+    async function postSweepState(runId, label, idx, total, running) {
+      const { rows, cols } = gridDims();
+      const body = {
+        grid: $("grid").value, fps: parseInt($("fps").value), cells: rows * cols,
+        oti: currentOtiHex, packetSize: currentPacketSize,
+        totalPackets: encoder ? encoder.packetCount() : 0, running: !!running,
+        sweep: true, runId, patternLabel: label, patternIndex: idx, patternTotal: total,
+      };
+      try { await fetch("/state/sender", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); } catch (e) { /* オフライン可 */ }
+    }
+    async function postSweepEnd() {
+      try { await fetch("/state/sender", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ grid: $("grid").value, running: false, sweep: false }) }); } catch (e) { /* noop */ }
+    }
+
+    async function runOnePattern(payload, pat, idx, total) {
+      $("grid").value = pat.grid;
+      $("fps").value = String(pat.fps);
+      const { rows, cols } = gridDims();
+      const packetSize = packetSizeFor(rows, cols);
+      currentPacketSize = packetSize;
+      const extraRepair = Math.ceil(payload.length / packetSize * 0.5);
+      encoder = new FountainEncoder(payload, packetSize, extraRepair);
+      otiBytes = encoder.otiBytes();
+      currentOtiHex = Array.from(otiBytes).map(b => b.toString(16).padStart(2, "0")).join("");
+      const totalPackets = encoder.packetCount();
+      const neededApprox = Math.ceil(payload.length / packetSize);
+      packetCursor = 0; frameCount = 0;
+      sweepRunId++;
+      const myRun = sweepRunId;
+      const label = `${pat.grid}@${pat.fps}`;
+
+      if (timer) clearInterval(timer);
+      timer = setInterval(renderFrame, 1000 / pat.fps);
+      postSweepState(myRun, label, idx, total, true);
+      setStatus(`[スイープ ${idx + 1}/${total}] ${label} 開始 (受信側の追従待ち...)`);
+
+      const startWall = performance.now();
+      const deadline = startWall + SWEEP_TIMEOUT_MS;
+      let recovered = null, lastRecv = null;
+      while (performance.now() < deadline && sweeping) {
+        postSweepState(myRun, label, idx, total, true);   // state を新鮮に保つハートビート
+        const recv = await sampleReceiver();
+        if (recv) lastRecv = recv;
+        if (recv && recv.recoveredRunId === myRun) { recovered = recv; break; }
+        const remain = Math.round((deadline - performance.now()) / 1000);
+        setStatus(`[スイープ ${idx + 1}/${total}] ${label} 計測中... 残り${remain}s / unique ${lastRecv && lastRecv.uniquePackets || 0}/${neededApprox}`);
+        await sleep(700);
+      }
+      const wallSec = +((performance.now() - startWall) / 1000).toFixed(1);
+
+      if (recovered) {
+        const transferSec = recovered.recoverSec != null ? recovered.recoverSec : null;
+        return {
+          idx, label, grid: pat.grid, fps: pat.fps, packetSize, totalPackets, neededApprox,
+          ok: true, timeout: false, wallSec, transferSec,
+          kbps: transferSec ? +((payload.length / 1024) / transferSec).toFixed(2) : null,
+          scanFps: recovered.scanFps != null ? recovered.scanFps : null,
+          readsPerFrame: recovered.readsPerFrame != null ? recovered.readsPerFrame : null,
+          unique: recovered.uniquePackets != null ? recovered.uniquePackets : neededApprox,
+        };
+      }
+      return {
+        idx, label, grid: pat.grid, fps: pat.fps, packetSize, totalPackets, neededApprox,
+        ok: false, timeout: sweeping, wallSec, transferSec: null, kbps: null,
+        scanFps: lastRecv && lastRecv.scanFps != null ? lastRecv.scanFps : null,
+        readsPerFrame: lastRecv && lastRecv.readsPerFrame != null ? lastRecv.readsPerFrame : null,
+        unique: lastRecv && lastRecv.uniquePackets || 0,
+      };
+    }
+
+    async function runDataSweep() {
+      if (sweeping || probing) return;
+      await init();
+      const payload = await getPayload();
+      if (payload.length === 0) { setStatus("ペイロードが空です (画像/テキストを入れてください)"); return; }
+      lastPayloadLen = payload.length;
+      sweeping = true;
+      sweepRunId = 0;
+      if (timer) { clearInterval(timer); timer = null; }
+      if (statePollTimer) { clearInterval(statePollTimer); statePollTimer = null; }   // 通常ポーリングは止める
+      $("startBtn").disabled = true;
+      $("probeBtn").disabled = true;
+      $("stopBtn").disabled = false;   // スイープ中は中断ボタンとして使う
+      $("sweepBtn").disabled = true;
+      $("sweepPanel").style.display = "block";
+      $("feedback").className = "muted";
+      $("feedback").textContent = "実データスイープ中 — スマホ receiver のカメラを画面に向けたままにしてください";
+      const patterns = buildSweepPatterns();
+      const results = [];
+      try {
+        for (let i = 0; i < patterns.length && sweeping; i++) {
+          const res = await runOnePattern(payload, patterns[i], i, patterns.length);
+          results.push(res);
+          showSweepResults(results, false);
+          await postSweepLog(results, false);
+        }
+      } catch (e) {
+        setStatus(`スイープ異常終了: ${e.message || e}`);
+      } finally {
+        showSweepResults(results, true);
+        await postSweepLog(results, true);
+        if (timer) { clearInterval(timer); timer = null; }
+        sweeping = false;
+        await postSweepEnd();
+        ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+        $("startBtn").disabled = false;
+        $("probeBtn").disabled = false;
+        $("stopBtn").disabled = true;
+        $("sweepBtn").disabled = false;
+        setStatus(`スイープ完了: ${results.filter(r => r.ok).length}/${results.length} 成功`);
+      }
+    }
+
+    function showSweepResults(results, done) {
+      const ok = results.filter(r => r.ok);
+      const best = ok.length ? [...ok].sort((a, b) => (b.kbps || 0) - (a.kbps || 0))[0] : null;
+      const sorted = [...results].sort((a, b) => {
+        if (a.ok !== b.ok) return a.ok ? -1 : 1;
+        return (b.kbps || 0) - (a.kbps || 0);
+      });
+      let html = `<div class="sweep-head"><b>実データスイープ</b> ${done ? "(完了)" : `(${results.length}件)`}`;
+      if (best) html += ` — 最速 <b>${best.label}</b> ${best.transferSec}s / ${best.kbps}KB/s`;
+      html += `<button id="sweepCloseInner" class="probe-close" title="閉じる" style="float:right">×</button></div>`;
+      html += `<table><tr><th>#</th><th>設定</th><th>結果</th><th>転送s</th><th>KB/s</th><th>scanFps</th><th>QR/f</th><th>unique</th></tr>`;
+      for (const r of sorted) {
+        const cls = best && r === best ? "best" : (r.ok ? "" : "fail");
+        html += `<tr class="${cls}"><td>${r.idx + 1}</td><td>${r.label}</td>` +
+          `<td>${r.ok ? "OK" : "NG"}</td>` +
+          `<td>${r.transferSec != null ? r.transferSec : "—"}</td><td>${r.kbps != null ? r.kbps : "—"}</td>` +
+          `<td>${r.scanFps != null ? r.scanFps : "—"}</td><td>${r.readsPerFrame != null ? r.readsPerFrame : "—"}</td>` +
+          `<td>${r.unique}/${r.neededApprox}</td></tr>`;
+      }
+      html += `</table>`;
+      $("sweepPanel").innerHTML = html;
+    }
+
+    async function postSweepLog(results, done) {
+      const rows = results.map(r =>
+        `${r.idx + 1}\t${r.label}\tpkt=${r.packetSize}\ttotalPkts=${r.totalPackets}\t` +
+        (r.ok
+          ? `OK\ttransfer=${r.transferSec}s\twall=${r.wallSec}s\t${r.kbps}KB/s\tscanFps=${r.scanFps}\tQR/frame=${r.readsPerFrame}\tunique=${r.unique}/${r.neededApprox}`
+          : `NG(${r.timeout ? "timeout" : "abort"})\twall=${r.wallSec}s\tunique=${r.unique}/${r.neededApprox}\tscanFps=${r.scanFps}\tQR/frame=${r.readsPerFrame}`)
+      );
+      const head = `=== beyond-qr 実データスイープ ${done ? "(完了)" : "(進行中)"} ===\n` +
+        `payload=${lastPayloadLen}B  patterns=${results.length}  timeout=${SWEEP_TIMEOUT_MS / 1000}s  repeats=${SWEEP_REPEATS}\n`;
+      try { await fetch("/log", { method: "POST", headers: { "Content-Type": "text/plain" }, body: head + rows.join("\n") + "\n" }); } catch (e) { /* noop */ }
+    }
+
+    $("sweepBtn").addEventListener("click", () => runDataSweep().catch(e => setStatus(`sweep error: ${e.message}`)));
+    $("sweepPanel").addEventListener("click", (e) => {
+      if (e.target.closest("#sweepCloseInner")) $("sweepPanel").style.display = "none";
     });
   </script>
 </body>

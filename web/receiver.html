@@ -151,6 +151,11 @@
     let lastWinResetTs = 0;                    // scanFps 計測用 (ウィンドウ開始時刻)
     let lastProbeGrid = null;                  // プローブ中のグリッド変化検出用
     let wakeLock = null;                       // 画面減光で rAF が間引かれるのを防ぐ
+    // 実データスイープ用 (送信側の runId で1パターンの境界を作る)
+    let senderSweep = false;
+    let currentRunId = null;                   // 現在計測中の runId
+    let recoveredRunId = null;                 // 直近で復元完了した runId
+    let recoverSec = null;                     // そのパターンの転送秒 (最初のQR→復元)
 
     function resetState() {
       decoder = null;
@@ -209,6 +214,25 @@
       lastWinResetTs = performance.now();
       settlingUntil = performance.now() + 1500;  // 過渡期は送信側に効率を評価させない
       out(`[resync] 送信側の設定変更を検出 (OTI=${newOtiHex})。復号をやり直します`, "info");
+    }
+
+    // スイープ: runId が変わるたびに復号状態をリセットして次パターンを計測する。
+    // FPS だけ変えた場合 OTI が同一になり resyncDecode が発火しないため、runId で明示的に区切る。
+    function startNewRun(runId, label) {
+      currentRunId = runId;
+      decoder = null;
+      uniquePackets = new Set();
+      payload = null;
+      lastOtiHex = null;
+      firstPacketTs = firstPacketClock = null;
+      doneTs = doneClock = null;
+      result.style.display = "none";
+      progressBar.style.width = "0%";
+      winFrames = 0; winReads = 0;
+      lastWinResetTs = performance.now();
+      settlingUntil = performance.now() + 1200;
+      recoverSec = null;
+      out(`[sweep] パターン#${runId}${label ? " " + label : ""} 計測開始`, "info");
     }
 
     async function startCamera() {
@@ -373,11 +397,13 @@
       const cropX = Math.floor((vw - cropSize) / 2);
       const cropY = Math.floor((vh - cropSize) / 2);
       // 追従 ON かつ送信側を検出していればそのグリッド、無ければ手動選択
-      const gridStr = ((senderProbing || $("followSender").checked) && senderGrid) ? senderGrid : $("grid").value;
+      const gridStr = ((senderProbing || senderSweep || $("followSender").checked) && senderGrid) ? senderGrid : $("grid").value;
       effectiveGrid = gridStr;
       const [rows, cols] = gridStr.split("x").map(Number);
-      // グリッドが大きいほど高解像度に (1 タイルあたりの画素を確保)
-      const targetSize = Math.max(640, Math.min(1280, 480 * Math.max(rows, cols)));
+      // カメラのクロップ実寸を活かす (ダウンスケールで密な単一 QR を潰さない)。
+      // 1x1 は 1 枚が高版 (v25+) で最も画素を要するため crop 実寸をそのまま使い、
+      // グリッドが大きいときだけ 480×cols まで引き上げてタイル毎の画素を確保する。
+      const targetSize = Math.min(1280, Math.max(640, cropSize, 480 * Math.max(rows, cols)));
       captureCanvas.width = targetSize;
       captureCanvas.height = targetSize;
       const ctx = captureCanvas.getContext("2d", { willReadFrequently: true });
@@ -400,6 +426,14 @@
           winReads += reads;
         }
         progressEl.firstElementChild.textContent = `📡 プローブ測定中: grid ${effectiveGrid} | ${codes.length} QR/frame`;
+        updateTiming();
+        scanLoop = requestAnimationFrame(scanFrame);
+        return;
+      }
+
+      if (senderSweep && payload && recoveredRunId === currentRunId) {
+        // スイープ: 当該パターンは復元済み。デコードせず次パターン (runId 変化) を待つ
+        progressEl.firstElementChild.textContent = `✅ #${currentRunId} 復元済 (${recoverSec}s) — 次パターン待ち`;
         updateTiming();
         scanLoop = requestAnimationFrame(scanFrame);
         return;
@@ -450,6 +484,15 @@
                 showResult(payload);
                 updateProgress();
                 updateTiming();
+                if (senderSweep) {
+                  // スイープ: 止めずに記録し、次パターン (runId 変化) を待つ
+                  recoveredRunId = currentRunId;
+                  recoverSec = firstPacketTs ? +((doneTs - firstPacketTs) / 1000).toFixed(2) : null;
+                  out(`[sweep] #${currentRunId} 復元 ${recoverSec}s — 止めずに次パターン待ち`, "ok");
+                  postReceiverState();   // 即報告して送信側を次パターンへ進ませる
+                  scanLoop = requestAnimationFrame(scanFrame);
+                  return;
+                }
                 stop();
                 return;
               }
@@ -479,9 +522,13 @@
           senderGrid = s.grid; senderFps = s.fps;
           senderTotalPackets = s.totalPackets || 0; senderPacketSize = s.packetSize || 0;
           senderProbing = !!s.probing;
+          senderSweep = !!s.sweep;
+          if (senderSweep && typeof s.runId === "number" && s.runId !== currentRunId) {
+            startNewRun(s.runId, s.patternLabel);   // 新パターン → 計測リセット (OTI 同一でも区切る)
+          }
         } else {
           senderGrid = senderFps = null; senderTotalPackets = senderPacketSize = 0;
-          senderProbing = false;
+          senderProbing = false; senderSweep = false;
         }
         if (wasProbing && !senderProbing) clearForNewSession(); // プローブ終了 → 本番待ちで仕切り直し
         updateSenderInfo();
@@ -489,9 +536,10 @@
     }
 
     function updateSenderInfo() {
-      const follow = $("followSender").checked;
+      const follow = $("followSender").checked || senderSweep;
+      const sw = senderSweep ? ` [スイープ#${currentRunId != null ? currentRunId : "?"}]` : "";
       $("senderInfo").textContent = senderGrid
-        ? `送信側: grid ${senderGrid}${senderFps ? " @" + senderFps + "fps" : ""}${follow ? " (追従中)" : " (手動)"}`
+        ? `送信側: grid ${senderGrid}${senderFps ? " @" + senderFps + "fps" : ""}${follow ? " (追従中)" : " (手動)"}${sw}`
         : `送信側: 未検出${follow ? " — 検出したら自動追従" : ""}`;
     }
 
@@ -512,6 +560,7 @@
         uniquePackets: uniquePackets.size,
         payloadSize: decoder ? Number(decoder.payloadSize()) : 0,
         recovered: !!payload, oti: lastOtiHex,
+        runId: currentRunId, recoveredRunId, recoverSec,
       };
       try { await fetch("/state/receiver", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); } catch (e) { /* オフライン可 */ }
     }
