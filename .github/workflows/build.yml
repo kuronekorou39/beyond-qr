@@ -1,23 +1,21 @@
 name: build
 
-# Flutter アプリ (app/) + Rust FFI ブリッジ (cargokit) のネイティブビルド検証。
-# Android は APK を成果物として出力、iOS は署名なしでコンパイル確認 (Mac 不要の CI 検証)。
+# Flutter アプリ (app/) + Rust FFI ブリッジ (cargokit) のネイティブビルド。
+# - main への push: ビルド検証 + 成果物 (APK / 署名なし IPA) を Actions アーティファクトに
+# - タグ push (v*): 上記に加え、GitHub Release を作成し APK と IPA を添付 (恒久DLリンク)
 on:
   push:
     branches: [main]
-    paths:
-      - "app/**"
-      - "fountain/**"
-      - ".github/workflows/build.yml"
+    tags: ["v*"]
   workflow_dispatch:
 
 jobs:
   android:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
@@ -40,16 +38,16 @@ jobs:
         working-directory: app
         run: flutter build apk --release
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: beyond-qr-android-apk
           path: app/build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
 
   ios:
-    runs-on: macos-latest
+    runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: subosito/flutter-action@v2
         with:
@@ -65,7 +63,45 @@ jobs:
         working-directory: app
         run: flutter pub get
 
-      # 署名なしでコンパイルのみ検証 (証明書は後で TestFlight 配布時に設定)。
+      # 署名なしでビルド (証明書は Sideloadly が再署名時に付与する)。
       - name: Build iOS (no codesign)
         working-directory: app
         run: flutter build ios --release --no-codesign
+
+      # Runner.app を Payload/ に入れて zip → .ipa 化 (Sideloadly が受け取れる形式)。
+      - name: Package unsigned IPA
+        working-directory: app/build/ios/iphoneos
+        run: |
+          mkdir -p Payload
+          cp -R Runner.app Payload/Runner.app
+          zip -qry beyond-qr-unsigned.ipa Payload
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: beyond-qr-ios-unsigned-ipa
+          path: app/build/ios/iphoneos/beyond-qr-unsigned.ipa
+          if-no-files-found: error
+
+  # タグ (v*) のときだけ: 成果物を集めて GitHub Release に添付する。
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [android, ios]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          path: dist
+
+      - name: Create GitHub Release with binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          find dist -type f
+          gh release create "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --title "${{ github.ref_name }}" \
+            --notes "自動ビルド: Android APK + iOS unsigned IPA (Sideloadly 用)" \
+            dist/beyond-qr-android-apk/app-release.apk \
+            dist/beyond-qr-ios-unsigned-ipa/beyond-qr-unsigned.ipa
