@@ -56,6 +56,8 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
   String? _lastOti;
   final _unique = <String>{};
   int _payloadSize = 0;
+  String? _warning; // 大きすぎる等の注意
+  String? _blockedOti; // ガードで弾いた OTI (再プローブ防止)
 
   ({String name, String type, Uint8List body})? _result;
 
@@ -70,6 +72,8 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
       _lastOti = null;
       _unique.clear();
       _payloadSize = 0;
+      _warning = null;
+      _blockedOti = null;
       _result = null;
     });
   }
@@ -90,13 +94,25 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
       final oti = Uint8List.sublistView(bytes, 0, 12);
       final packet = Uint8List.sublistView(bytes, 12);
 
+      if (otiHex == _blockedOti) continue; // 大きすぎでブロック済み
       // OTI が変わったら復号やり直し (送信側の設定変更に追従)
       if (_decoder == null || otiHex != _lastOti) {
         try {
-          _decoder = FountainDecoder(otiBytes: oti);
+          final dec = FountainDecoder(otiBytes: oti);
+          final sz = dec.payloadSize().toInt();
+          // 大きすぎる payload は RaptorQ 復号が破綻し UI が固まるのでブロック
+          if (sz > 800 * 1024) {
+            _blockedOti = otiHex;
+            _warning = '送信データが大きすぎます (${(sz / 1024).round()}KB)。'
+                'QR転送は ~200KB 向けです';
+            changed = true;
+            continue;
+          }
+          _decoder = dec;
           _lastOti = otiHex;
           _unique.clear();
-          _payloadSize = _decoder!.payloadSize().toInt();
+          _payloadSize = sz;
+          _warning = null;
         } catch (_) {
           continue;
         }
@@ -172,6 +188,12 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              if (_warning != null)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Text('⚠ $_warning',
+                      style: const TextStyle(color: Colors.orange)),
+                ),
               Text('OTI: ${_lastOti ?? "-"}',
                   style: Theme.of(context).textTheme.bodySmall),
               Text('ユニーク: ${_unique.length} / $needed'

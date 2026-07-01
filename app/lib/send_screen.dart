@@ -65,7 +65,14 @@ class _SendScreenState extends State<SendScreen> {
   }
 
   Future<void> _pickImage() async {
-    final x = await _picker.pickImage(source: ImageSource.gallery);
+    // QR 転送は ~200KB 向けなので、長辺 1600px・品質 82 に縮小して取り込む
+    // (フル解像度の写真は数MB→パケット数万で復元不能になるため)。
+    final x = await _picker.pickImage(
+      source: ImageSource.gallery,
+      maxWidth: 1600,
+      maxHeight: 1600,
+      imageQuality: 82,
+    );
     if (x == null) return;
     final bytes = await x.readAsBytes();
     setState(() {
@@ -106,6 +113,14 @@ class _SendScreenState extends State<SendScreen> {
     final payload = _buildPayload();
     if (payload.length <= 6) {
       setState(() => _status = 'ペイロードが空です');
+      return;
+    }
+    // QR + カメラ転送は ~200KB 向け。大きすぎるとパケットが数千〜数万個になり、
+    // 転送に数分〜、受信側の RaptorQ 復号も破綻する。上限でブロックする。
+    if (payload.length > 800 * 1024) {
+      setState(() => _status =
+          '大きすぎます (${(payload.length / 1024).round()}KB)。QR転送は ~200KB 向けです。'
+          '画像は自動縮小されますが、大きいファイルは非対応です');
       return;
     }
     final packetSize = _packetByGrid[_grid] ?? 200;
