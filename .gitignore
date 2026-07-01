@@ -36,3 +36,6 @@ scratch/
 # client_logs: /capture・/log の保存先 (実機キャプチャ PNG・ログ)
 web/certs/
 web/client_logs/
+
+# 作業環境の写真 (コミット不要)
+PXL_*.jpg
