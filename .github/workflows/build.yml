@@ -38,7 +38,7 @@ jobs:
         working-directory: app
         run: flutter build apk --release
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: beyond-qr-android-apk
           path: app/build/app/outputs/flutter-apk/app-release.apk
@@ -76,7 +76,7 @@ jobs:
           cp -R Runner.app Payload/Runner.app
           zip -qry beyond-qr-unsigned.ipa Payload
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: beyond-qr-ios-unsigned-ipa
           path: app/build/ios/iphoneos/beyond-qr-unsigned.ipa
@@ -90,7 +90,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v7
         with:
           path: dist
 
