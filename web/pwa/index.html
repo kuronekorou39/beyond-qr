@@ -12,30 +12,113 @@
       margin: 0; font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
       background: #111318; color: #e6e6e6;
     }
-    header { padding: 0.6em 1em; background: #1a1d24; border-bottom: 1px solid #2a2e37; }
-    header h1 { margin: 0; font-size: 1.1em; }
-    main { padding: 1em; max-width: 900px; margin: 0 auto; }
+    header { padding: 0.6em 1em; background: #1a1d24; border-bottom: 1px solid #2a2e37;
+      display: flex; align-items: center; gap: 1em; flex-wrap: wrap; }
+    header h1 { margin: 0; font-size: 1.05em; }
+    #coreStatus { font-size: 0.85em; }
+    nav { display: flex; gap: 0.4em; }
+    nav button { background: #333842; color: #e6e6e6; border: none; border-radius: 6px;
+      padding: 0.45em 1em; font-size: 0.95em; cursor: pointer; }
+    nav button.active { background: #5b8cff; color: #fff; }
+    main { padding: 1em; max-width: 1000px; margin: 0 auto; }
+    .pane { display: none; }
+    .pane.active { display: block; }
     .card { background: #1a1d24; border: 1px solid #2a2e37; border-radius: 8px; padding: 1em; margin: 0.8em 0; }
+    .row { display: flex; gap: 0.8em; align-items: center; flex-wrap: wrap; margin: 0.5em 0; }
     .ok { color: #5ad17a; } .ng { color: #f2777a; } .muted { color: #9aa0aa; }
-    button { background: #5b8cff; color: #fff; border: none; border-radius: 6px; padding: 0.6em 1.1em; font-size: 1em; cursor: pointer; }
+    button { background: #5b8cff; color: #fff; border: none; border-radius: 6px;
+      padding: 0.55em 1.1em; font-size: 1em; cursor: pointer; }
     button.secondary { background: #333842; }
-    code { background: #0e1015; padding: 0.1em 0.4em; border-radius: 4px; }
+    button:disabled { background: #262a31; color: #6a707a; cursor: default; }
+    select, input[type="number"] { background: #0e1015; color: #e6e6e6; border: 1px solid #2a2e37;
+      border-radius: 6px; padding: 0.4em 0.5em; font-size: 1em; }
+    label { font-size: 0.9em; color: #b8bec8; }
+    /* 送信ステージ: QR を白背景で大きく表示 */
+    #txStage { display: none; position: fixed; inset: 0; background: #fff; z-index: 50;
+      flex-direction: column; align-items: center; justify-content: center; }
+    #txCanvas { image-rendering: pixelated; background: #fff; }
+    #txBar { position: fixed; left: 0; right: 0; bottom: 0; background: rgba(20,22,28,0.92);
+      color: #e6e6e6; padding: 0.5em 1em; display: flex; gap: 1em; align-items: center; }
+    #txBar .grow { flex: 1; font-size: 0.9em; }
+    /* 受信 */
+    #rxVideoWrap { position: relative; background: #000; border-radius: 8px; overflow: hidden;
+      max-width: 720px; }
+    #rxVideo { width: 100%; display: block; }
+    progress { width: 100%; height: 10px; }
   </style>
 </head>
 <body>
-  <header><h1>beyond-qr — PC 送受信 (PWA)</h1></header>
+  <header>
+    <h1>beyond-qr — PC 送受信</h1>
+    <nav>
+      <button id="tabSend" class="active">送信</button>
+      <button id="tabRecv">受信</button>
+    </nav>
+    <div id="coreStatus" class="muted">WASM 読み込み中...</div>
+  </header>
   <main>
-    <div class="card" id="coreCard">
-      <b>コア自己診断</b>
-      <div id="coreStatus" class="muted">WASM 読み込み中...</div>
-    </div>
-    <div class="card">
-      <b>状態</b>
-      <div class="muted">この PWA は Rust コア (Fountain) を WASM で再利用し、スマホアプリと同じ
-      ストリーミング形式で PC↔スマホ 送受信します。まずコアの動作を検証中。</div>
-      <div class="muted" style="margin-top:0.5em">送信/受信 UI は次段で追加します。</div>
-    </div>
+    <!-- ============ 送信 ============ -->
+    <section id="paneSend" class="pane active">
+      <div class="card">
+        <div class="row">
+          <input type="file" id="txFile" />
+        </div>
+        <div class="row">
+          <label>グリッド:
+            <select id="txGrid">
+              <option value="1x1">1×1</option>
+              <option value="1x2" selected>1×2</option>
+              <option value="2x2">2×2</option>
+            </select></label>
+          <label>EC:
+            <select id="txEc">
+              <option>L</option><option selected>M</option><option>Q</option><option>H</option>
+            </select></label>
+          <label>FPS: <input type="number" id="txFps" value="10" min="2" max="30" style="width:4em" /></label>
+          <button id="txStart">送信開始</button>
+        </div>
+        <div id="txInfo" class="muted"></div>
+      </div>
+      <div class="card muted">
+        スマホアプリの「受信」でこの画面の QR を読み取ってください。
+        大きなファイルもブロック分割でストリーミング送信します (RAM 一定)。
+      </div>
+    </section>
+
+    <!-- ============ 受信 ============ -->
+    <section id="paneRecv" class="pane">
+      <div class="card">
+        <div class="row">
+          <label>グリッド (送信側に合わせる):
+            <select id="rxGrid">
+              <option value="1x1">1×1</option>
+              <option value="1x2" selected>1×2</option>
+              <option value="2x2">2×2</option>
+            </select></label>
+          <button id="rxStart">カメラ開始</button>
+          <button id="rxStop" class="secondary" disabled>停止</button>
+        </div>
+        <div id="rxVideoWrap"><video id="rxVideo" autoplay playsinline muted></video></div>
+        <div style="margin-top:0.6em">
+          <progress id="rxProgress" value="0" max="1"></progress>
+          <div id="rxInfo" class="muted">待機中 — 送信側 (スマホ/PC) の QR に向けてください</div>
+        </div>
+        <div id="rxResult"></div>
+      </div>
+    </section>
   </main>
+
+  <!-- 送信ステージ (全画面 QR 表示) -->
+  <div id="txStage">
+    <canvas id="txCanvas" width="1080" height="1080"></canvas>
+    <div id="txBar">
+      <div class="grow" id="txStatus"></div>
+      <button id="txStop" class="secondary">停止</button>
+    </div>
+  </div>
+
+  <script src="./vendor/qrcode.js"></script>
+  <script src="./vendor/jsQR.js"></script>
   <script type="module" src="./app.js"></script>
 </body>
 </html>
