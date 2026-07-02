@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
+import 'history_screen.dart' show shareReceived;
 import 'history_store.dart';
 import 'src/rust/api/fountain.dart';
 import 'src/rust/api/vcode.dart';
@@ -32,8 +33,11 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
   int? _packetSize; // 最初の回収パケットから推定 (シリアライズ長 - 4)
   Uint8List? _payload;
   String? _savedPath;
+  HistoryItem? _savedItem;
 
   // 統計
+  int _camCallbacks = 0; // カメラが配信した全フレーム (busy スキップ含む)
+  DateTime? _camStarted;
   int _framesSeen = 0;
   int _framesDetected = 0;
   int _framesTracked = 0;
@@ -64,10 +68,14 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
         // 1080p: 高密度レイアウト (7x6) はセル解像度が必要 (720p だと ~4px/セルで限界)
         ResolutionPreset.veryHigh,
         enableAudio: false,
+        // 60fps 要求 (対応外の端末では無視される。実配信レートは統計で確認)
+        fps: 60,
         imageFormatGroup: ImageFormatGroup.yuv420,
       );
       await cam.initialize();
       _rx = VcodeRx();
+      _camStarted = DateTime.now();
+      _camCallbacks = 0;
       await cam.startImageStream(_onFrame);
       await WakelockPlus.enable();
       setState(() {
@@ -80,7 +88,21 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
     }
   }
 
+  /// カメラの実配信フレームレート (要求 60fps がどこまで通ったかの検証用)。
+  /// 最後のコールバック時刻までで計測する (完了後に表示しても値が減衰しない)。
+  double get _camFps {
+    final started = _camStarted;
+    final last = _lastCallbackAt;
+    if (started == null || last == null || _camCallbacks < 2) return 0;
+    final sec = last.difference(started).inMilliseconds / 1000.0;
+    return sec > 0 ? _camCallbacks / sec : 0;
+  }
+
+  DateTime? _lastCallbackAt;
+
   Future<void> _onFrame(CameraImage img) async {
+    _camCallbacks++;
+    _lastCallbackAt = DateTime.now();
     if (_busy || !_active || _payload != null) return;
     _busy = true;
     try {
@@ -135,7 +157,8 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
         }
       } else if (_framesSeen % 30 == 0) {
         debugPrint('[vcode-rx] not detected (${report.error}) '
-            'scan=${_lastScanMs}ms seen=$_framesSeen detected=$_framesDetected');
+            'scan=${_lastScanMs}ms seen=$_framesSeen detected=$_framesDetected '
+            'camFps=${_camFps.toStringAsFixed(1)}');
       }
       if (mounted && _framesSeen % 5 == 0) setState(() {});
     } finally {
@@ -154,6 +177,26 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
     }
   }
 
+  /// 先頭バイトからファイル種別を推定する (vcode はメタデータを運ばないため)
+  (String, String) _sniffType(Uint8List b) {
+    if (b.length > 3 && b[0] == 0xFF && b[1] == 0xD8) return ('jpg', 'image/jpeg');
+    if (b.length > 7 && b[0] == 0x89 && b[1] == 0x50) return ('png', 'image/png');
+    if (b.length > 11 && b[8] == 0x57 && b[9] == 0x45 && b[10] == 0x42 && b[11] == 0x50) {
+      return ('webp', 'image/webp');
+    }
+    if (b.length > 3 && b[0] == 0x25 && b[1] == 0x50 && b[2] == 0x44 && b[3] == 0x46) {
+      return ('pdf', 'application/pdf');
+    }
+    if (b.length > 1 && b[0] == 0x50 && b[1] == 0x4B) return ('zip', 'application/zip');
+    // 先頭 4KB の制御文字率でテキスト判定
+    final probe = b.take(4096);
+    final ctrl = probe.where((c) => c < 9 || (c > 13 && c < 32) || c == 127).length;
+    if (probe.isNotEmpty && ctrl / probe.length < 0.02) {
+      return ('txt', 'text/plain;charset=utf-8');
+    }
+    return ('bin', 'application/octet-stream');
+  }
+
   Future<void> _onComplete(Uint8List payload) async {
     final elapsed = _firstDetected == null
         ? Duration.zero
@@ -163,19 +206,28 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
       _elapsed = elapsed;
       _status = '受信完了';
     });
-    debugPrint('[vcode-rx] COMPLETE: ${payload.length} bytes in '
-        '${elapsed.inMilliseconds}ms, '
-        'frames seen=$_framesSeen detected=$_framesDetected, '
-        'blocks=$_blocksOk, packets=$_packetsAdded');
-    // 履歴に保存 (QR 受信と同じ HistoryStore を使用)
+    final ms = elapsed.inMilliseconds;
+    final kbps = ms > 0 ? (payload.length / 1024) / (ms / 1000) : 0.0;
+    final note = '${(ms / 1000).toStringAsFixed(2)}s'
+        ' · ${kbps.toStringAsFixed(1)}KB/s'
+        ' · cam${_camFps.toStringAsFixed(0)}fps'
+        ' · 検出$_framesDetected/$_framesSeen(追従$_framesTracked)'
+        ' · blk$_blocksOk · pkt$_packetsAdded'
+        ' · scan${_scanCount > 0 ? (_scanMsSum / _scanCount).round() : 0}ms';
+    debugPrint('[vcode-rx] COMPLETE: ${payload.length} bytes in ${ms}ms, $note');
+    // 履歴に保存 (QR 受信と同じ HistoryStore、種別は内容から推定)
     try {
+      final (ext, mime) = _sniffType(payload);
       final slot = HistoryStore.instance.reserveReceivedPath();
       await File(slot.path).writeAsBytes(payload);
       final name =
-          'vcode_${DateTime.now().toIso8601String().replaceAll(':', '-').substring(0, 19)}.bin';
+          'vcode_${DateTime.now().toIso8601String().replaceAll(':', '-').substring(0, 19)}.$ext';
       await HistoryStore.instance
-          .registerReceived(slot.id, name, 'application/octet-stream', payload.length);
-      setState(() => _savedPath = '履歴: $name');
+          .registerReceived(slot.id, name, mime, payload.length, note: note);
+      setState(() {
+        _savedPath = '履歴に保存: $name';
+        _savedItem = HistoryStore.instance.received.first;
+      });
     } catch (e) {
       debugPrint('[vcode-rx] 履歴保存失敗: $e');
     }
@@ -202,6 +254,7 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
       _packetSize = null;
       _payload = null;
       _savedPath = null;
+      _savedItem = null;
       _framesSeen = 0;
       _framesDetected = 0;
       _framesTracked = 0;
@@ -238,6 +291,7 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
       ('所要時間 (初検出→完了)', ms >= 1000 ? '${(ms / 1000).toStringAsFixed(2)} 秒' : '$ms ms'),
       ('実効スループット', '${kbps.toStringAsFixed(1)} KB/s'),
       ('カメラフレーム数', '$_framesSeen (検出 $_framesDetected / 追従 $_framesTracked)'),
+      ('カメラ実効fps', _camFps.toStringAsFixed(1)),
       ('回収ブロック', '$_blocksOk (部分回収込み)'),
       ('投入パケット', '$_packetsAdded'),
       ('平均スキャン時間', _scanCount > 0 ? '${(_scanMsSum / _scanCount).round()} ms' : '-'),
@@ -295,8 +349,20 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
                                 style: const TextStyle(fontSize: 11)),
                           ),
                         const SizedBox(height: 12),
-                        FilledButton(
-                            onPressed: _reset, child: const Text('もう一度受信')),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            if (_savedItem != null)
+                              FilledButton.tonalIcon(
+                                onPressed: () => shareReceived(_savedItem!),
+                                icon: const Icon(Icons.share),
+                                label: const Text('共有 / 保存'),
+                              ),
+                            const SizedBox(width: 12),
+                            FilledButton(
+                                onPressed: _reset, child: const Text('もう一度受信')),
+                          ],
+                        ),
                       ],
                     ),
                   ),

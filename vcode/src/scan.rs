@@ -398,7 +398,9 @@ pub fn scan_frame_tracked(
     )
     .ok_or(FrameError::CornerMismatch)?;
     let thr0 = threshold_for(img, &hmat0, layout);
-    let hmat = descend(img, &mut corners, layout, thr0, &[4.0, 2.0, 1.0, 0.5])
+    // 60fps 処理予算 (16ms) に収めるため探索ステップは 2 段に抑える。
+    // 高フレームレートではフレーム間変位が数 px なのでこれで十分追従できる。
+    let hmat = descend(img, &mut corners, layout, thr0, &[2.0, 0.5])
         .ok_or(FrameError::CornerMismatch)?;
     decode_at(img, hmat, layout)
 }

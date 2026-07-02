@@ -1,6 +1,16 @@
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:share_plus/share_plus.dart';
 import 'history_store.dart';
+
+/// 受信ファイルを OS の共有シートで送る (ダウンロード保存・他アプリ送付など)
+Future<void> shareReceived(HistoryItem item) async {
+  final file = HistoryStore.instance.receivedFile(item);
+  if (file == null || !await file.exists()) return;
+  await SharePlus.instance.share(ShareParams(
+    files: [XFile(file.path, mimeType: item.type, name: item.name)],
+  ));
+}
 
 class HistoryScreen extends StatelessWidget {
   const HistoryScreen({super.key});
@@ -59,7 +69,16 @@ class _ReceivedList extends StatelessWidget {
         return ListTile(
           leading: Icon(isImage ? Icons.image : Icons.insert_drive_file),
           title: Text(it.name, overflow: TextOverflow.ellipsis),
-          subtitle: Text('${_fmtSize(it.size)}  ·  ${_fmtTime(it.time)}'),
+          subtitle: Text([
+            '${_fmtSize(it.size)}  ·  ${_fmtTime(it.time)}',
+            if (it.note != null) it.note!,
+          ].join('\n')),
+          isThreeLine: it.note != null,
+          trailing: IconButton(
+            icon: const Icon(Icons.share),
+            tooltip: '共有 (ダウンロード保存など)',
+            onPressed: () => shareReceived(it),
+          ),
           onTap: () => Navigator.of(context).push(MaterialPageRoute(
             builder: (_) => _ViewerPage(item: it),
           )),
@@ -133,6 +152,29 @@ class _ViewerPage extends StatelessWidget {
         ),
       );
     }
-    return Scaffold(appBar: AppBar(title: Text(item.name)), body: body);
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(item.name),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.share),
+            tooltip: '共有 (ダウンロード保存など)',
+            onPressed: () => shareReceived(item),
+          ),
+        ],
+      ),
+      body: item.note == null
+          ? body
+          : Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(8),
+                  child: Text(item.note!,
+                      style: Theme.of(context).textTheme.bodySmall),
+                ),
+                Expanded(child: body),
+              ],
+            ),
+    );
   }
 }

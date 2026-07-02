@@ -1,7 +1,8 @@
 //! 実機 E2E テスト用: 本物の RaptorQ パケットを載せた vcode フレーム列を PNG で生成し、
 //! ブラウザでアニメーション表示する HTML も出力する。
 //!
-//! 実行: cargo run -p beyond-qr-vcode --example render_stream [payload_bytes] [grid_w] [grid_h]
+//! 実行: cargo run -p beyond-qr-vcode --example render_stream [payload_bytes|ファイルパス] [grid_w] [grid_h] [bpc]
+//! 第 1 引数が数値ならその長さの擬似ランダムデータ、ファイルパスならその実ファイルを送る。
 //! 出力: vcode/samples/stream/tx_NNN.png + vcode/samples/stream/index.html (gitignore 済み)
 //!
 //! PC でフルスクリーン表示し、スマホアプリの「V受信」をかざして受信を確認する。
@@ -23,25 +24,35 @@ fn save_png(bm: &beyond_qr_vcode::Bitmap, path: &Path) {
 }
 
 fn main() {
-    let payload_len: usize = std::env::args()
-        .nth(1)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(20_000);
+    // 第 1 引数: 数値 → 擬似ランダムデータのバイト数 / それ以外 → 実ファイルパス
+    let arg1 = std::env::args().nth(1);
+    let input_file: Option<String> = match &arg1 {
+        Some(s) if s.parse::<usize>().is_err() => Some(s.clone()),
+        _ => None,
+    };
+    let payload_len: usize = arg1.and_then(|s| s.parse().ok()).unwrap_or(20_000);
     let grid_w: usize = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(5);
     let grid_h: usize = std::env::args().nth(3).and_then(|s| s.parse().ok()).unwrap_or(4);
     let bpc: u8 = std::env::args().nth(4).and_then(|s| s.parse().ok()).unwrap_or(1);
     assert!(bpc == 1 || bpc == 2, "bpc は 1 か 2");
 
-    // 決定的だが圧縮しにくいペイロード (実データ相当)
-    let payload: Vec<u8> = {
-        let mut state: u64 = 0x0BEA_D5_C0DE;
-        (0..payload_len)
-            .map(|_| {
-                state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-                (state >> 33) as u8
-            })
-            .collect()
+    // 実ファイル指定ならそれを、なければ決定的な擬似ランダムペイロード
+    let payload: Vec<u8> = match &input_file {
+        Some(path) => fs::read(path).unwrap_or_else(|e| panic!("{path} を読めない: {e}")),
+        None => {
+            let mut state: u64 = 0x0BEA_D5_C0DE;
+            (0..payload_len)
+                .map(|_| {
+                    state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                    (state >> 33) as u8
+                })
+                .collect()
+        }
     };
+    let payload_len = payload.len();
+    if let Some(path) = &input_file {
+        println!("入力ファイル: {path} ({payload_len} バイト)");
+    }
 
     let layout = Layout { block: 20, grid_w, grid_h };
     let source_packets = payload_len.div_ceil(layout.packet_size(bpc));

@@ -14,6 +14,7 @@ class HistoryItem {
   final String? file; // received: 保存ファイルの相対パス
   final String? grid; // sent: 使用グリッド
   final String? ec; // sent: 使用 EC
+  final String? note; // 受信統計など任意のメモ (vcode: 所要時間/スループット/カメラfps 等)
 
   HistoryItem({
     required this.id,
@@ -24,6 +25,7 @@ class HistoryItem {
     this.file,
     this.grid,
     this.ec,
+    this.note,
   });
 
   DateTime get time => DateTime.fromMillisecondsSinceEpoch(tsMs);
@@ -37,6 +39,7 @@ class HistoryItem {
         if (file != null) 'file': file,
         if (grid != null) 'grid': grid,
         if (ec != null) 'ec': ec,
+        if (note != null) 'note': note,
       };
 
   factory HistoryItem.fromJson(Map<String, dynamic> j) => HistoryItem(
@@ -48,6 +51,7 @@ class HistoryItem {
         file: j['file'] as String?,
         grid: j['grid'] as String?,
         ec: j['ec'] as String?,
+        note: j['note'] as String?,
       );
 }
 
@@ -102,7 +106,9 @@ class HistoryStore {
   }
 
   /// 受信完了を履歴に登録 (実データは reserveReceivedPath のパスに書き込み済み)。
-  Future<void> registerReceived(String id, String name, String type, int size) async {
+  /// note には受信統計 (所要時間/スループット等) を残せる。
+  Future<void> registerReceived(String id, String name, String type, int size,
+      {String? note}) async {
     received.insert(
       0,
       HistoryItem(
@@ -111,7 +117,8 @@ class HistoryStore {
           type: type,
           size: size,
           tsMs: DateTime.now().millisecondsSinceEpoch,
-          file: 'received/$id'),
+          file: 'received/$id',
+          note: note),
     );
     await _persist();
     revision.value++;
