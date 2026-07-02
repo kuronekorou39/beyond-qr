@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
+import 'history_store.dart';
 import 'src/rust/api/vcode.dart';
 
 /// vcode (独自フォーマット) 送信画面。研究用: 単一ブロック・生バイトを
@@ -102,6 +103,13 @@ class _VcodeSendScreenState extends State<VcodeSendScreen> {
     });
     debugPrint('[vcode-tx] start: ${payload.length} B, '
         '${tx.packetCount()} packets, $_frameCount frames, $_fps fps');
+    // 送信試行を履歴に記録 (grid 欄をフォーマット識別に流用)
+    unawaited(HistoryStore.instance.addSent(
+        _pickedName ?? 'message.txt',
+        _pickedName == null ? 'text/plain;charset=utf-8' : 'application/octet-stream',
+        payload.length,
+        'vcode',
+        '${_fps}fps'));
     await WakelockPlus.enable();
     try {
       await ScreenBrightness().setScreenBrightness(1.0);
