@@ -85,6 +85,10 @@ pub struct VcodeScanReport {
     pub blocks_ok: u32,
     pub blocks_total: u32,
     pub error: Option<String>,
+    /// debug_dump=true のとき、回転処理後のグレースケール画像 (PC 側解析用)
+    pub debug_gray: Option<Vec<u8>>,
+    pub debug_w: u32,
+    pub debug_h: u32,
 }
 
 fn fail(reason: &str) -> VcodeScanReport {
@@ -96,6 +100,9 @@ fn fail(reason: &str) -> VcodeScanReport {
         blocks_ok: 0,
         blocks_total: 0,
         error: Some(reason.to_string()),
+        debug_gray: None,
+        debug_w: 0,
+        debug_h: 0,
     }
 }
 
@@ -105,7 +112,8 @@ fn fail(reason: &str) -> VcodeScanReport {
 /// - rotation_deg: 反時計回りに画像を起こす回転 (0/90/180/270)。
 ///   Android は通常 sensorOrientation=90 のとき 90 を渡す。
 /// - guide_frac: 回転後画像の幅に対するガイド枠幅の比 (UI のガイド枠と同じ値を渡す)
-#[flutter_rust_bridge::frb(sync)]
+// 注: sync にしない。非同期 (Rust ワーカースレッド実行) にすることで
+// UI isolate をブロックせず、カメラプレビューのカクつきを防ぐ。
 pub fn vcode_scan_gray(
     y: Vec<u8>,
     width: u32,
@@ -113,60 +121,75 @@ pub fn vcode_scan_gray(
     stride: u32,
     rotation_deg: u32,
     guide_frac: f64,
+    debug_dump: bool,
 ) -> VcodeScanReport {
     let (w, h, stride) = (width as usize, height as usize, stride as usize);
     if stride < w || y.len() < stride * h {
         return fail("Y プレーン寸法不正");
     }
 
-    // ストライド除去 + 回転 (反時計回りに rotation_deg 起こす = ピクセルを時計回りに回す)
-    let (rw, rh) = match rotation_deg % 360 {
-        90 | 270 => (h, w),
-        _ => (w, h),
-    };
-    let mut gray = vec![0u8; rw * rh];
-    for sy in 0..h {
-        let row = &y[sy * stride..sy * stride + w];
-        for sx in 0..w {
-            let (dx, dy) = match rotation_deg % 360 {
-                90 => (rw - 1 - sy, sx),
-                180 => (rw - 1 - sx, rh - 1 - sy),
-                270 => (sy, rh - 1 - sx),
-                _ => (sx, sy),
-            };
-            gray[dy * rw + dx] = row[sx];
-        }
-    }
-
-    let layout = vcode::Layout::V0;
-    // ガイド枠: 中央配置、幅 = guide_frac * 画像幅、アスペクトはレイアウト準拠
-    let gw = (guide_frac.clamp(0.2, 1.0) * rw as f64) as f32;
-    let gh = gw * layout.height() as f32 / layout.width() as f32;
-    let gh = gh.min(rh as f32 * 0.95);
-    let cx = rw as f32 / 2.0;
-    let cy = rh as f32 / 2.0;
-    let guide = Quad {
-        tl: (cx - gw / 2.0, cy - gh / 2.0),
-        tr: (cx + gw / 2.0, cy - gh / 2.0),
-        br: (cx + gw / 2.0, cy + gh / 2.0),
-        bl: (cx - gw / 2.0, cy + gh / 2.0),
-    };
-
-    let img = GrayImage { w: rw, h: rh, data: &gray };
-    match scan_frame(&img, &guide, layout) {
-        Err(e) => fail(&format!("{e:?}")),
-        Ok(result) => {
-            let frame = result.frame;
-            let packets: Vec<Vec<u8>> = frame.blocks.into_iter().flatten().collect();
-            VcodeScanReport {
-                detected: true,
-                frame_seq: frame.header.frame_seq as u32,
-                oti: frame.header.oti.to_vec(),
-                blocks_ok: packets.len() as u32,
-                blocks_total: layout.block_count() as u32,
-                packets,
-                error: None,
+    // 与えられた回転で失敗したら 180 度違いも試す (回転方向の系統誤差対策)
+    let mut errors = Vec::new();
+    for rot in [rotation_deg % 360, (rotation_deg + 180) % 360] {
+        let (rw, rh) = match rot {
+            90 | 270 => (h, w),
+            _ => (w, h),
+        };
+        let mut gray = vec![0u8; rw * rh];
+        for sy in 0..h {
+            let row = &y[sy * stride..sy * stride + w];
+            for sx in 0..w {
+                let (dx, dy) = match rot {
+                    90 => (rw - 1 - sy, sx),
+                    180 => (rw - 1 - sx, rh - 1 - sy),
+                    270 => (sy, rh - 1 - sx),
+                    _ => (sx, sy),
+                };
+                gray[dy * rw + dx] = row[sx];
             }
         }
+
+        let layout = vcode::Layout::V0;
+        // ガイド枠: 中央配置、幅 = guide_frac * 画像幅、アスペクトはレイアウト準拠
+        let gw = (guide_frac.clamp(0.2, 1.0) * rw as f64) as f32;
+        let gh = (gw * layout.height() as f32 / layout.width() as f32).min(rh as f32 * 0.95);
+        let cx = rw as f32 / 2.0;
+        let cy = rh as f32 / 2.0;
+        let guide = Quad {
+            tl: (cx - gw / 2.0, cy - gh / 2.0),
+            tr: (cx + gw / 2.0, cy - gh / 2.0),
+            br: (cx + gw / 2.0, cy + gh / 2.0),
+            bl: (cx - gw / 2.0, cy + gh / 2.0),
+        };
+
+        let img = GrayImage { w: rw, h: rh, data: &gray };
+        match scan_frame(&img, &guide, layout) {
+            Err(e) => errors.push(format!("rot{rot}:{e:?}")),
+            Ok(result) => {
+                let frame = result.frame;
+                let packets: Vec<Vec<u8>> = frame.blocks.into_iter().flatten().collect();
+                return VcodeScanReport {
+                    detected: true,
+                    frame_seq: frame.header.frame_seq as u32,
+                    oti: frame.header.oti.to_vec(),
+                    blocks_ok: packets.len() as u32,
+                    blocks_total: layout.block_count() as u32,
+                    packets,
+                    error: None,
+                    debug_gray: None,
+                    debug_w: 0,
+                    debug_h: 0,
+                };
+            }
+        }
+        if debug_dump {
+            // 最初の回転の処理済み画像を添付して返す (PC 側 debug_scan での解析用)
+            let mut report = fail(&errors.join(" / "));
+            report.debug_gray = Some(gray);
+            report.debug_w = rw as u32;
+            report.debug_h = rh as u32;
+            return report;
+        }
     }
+    fail(&errors.join(" / "))
 }

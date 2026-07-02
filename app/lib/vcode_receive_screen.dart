@@ -70,21 +70,27 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
     }
   }
 
-  void _onFrame(CameraImage img) {
+  Future<void> _onFrame(CameraImage img) async {
     if (_busy || !_active || _payload != null) return;
     _busy = true;
     try {
       final sw = Stopwatch()..start();
       final y = img.planes[0];
-      final report = vcodeScanGray(
+      final rotation = _cam?.description.sensorOrientation ?? 90;
+      // 未検出のあいだ 150 フレームごとに処理済み画像を上書き保存 (PC 解析用)
+      final wantDump = _framesDetected == 0 && _framesSeen > 0 && _framesSeen % 150 == 0;
+      final report = await vcodeScanGray(
         y: y.bytes,
         width: img.width,
         height: img.height,
         stride: y.bytesPerRow,
-        rotationDeg: _cam!.description.sensorOrientation,
+        rotationDeg: rotation,
         guideFrac: _guideFrac,
+        debugDump: wantDump,
       );
       sw.stop();
+      if (!_active || _payload != null) return;
+      if (report.debugGray != null) _saveDump(report);
 
       _framesSeen++;
       _lastScanMs = sw.elapsedMilliseconds;
@@ -114,6 +120,17 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
       if (mounted && _framesSeen % 5 == 0) setState(() {});
     } finally {
       _busy = false;
+    }
+  }
+
+  Future<void> _saveDump(VcodeScanReport report) async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final path = '${dir.path}/vcode_dump_${report.debugW}x${report.debugH}.gray';
+      await File(path).writeAsBytes(report.debugGray!);
+      debugPrint('[vcode-rx] DUMP saved: $path (err=${report.error})');
+    } catch (e) {
+      debugPrint('[vcode-rx] DUMP 保存失敗: $e');
     }
   }
 

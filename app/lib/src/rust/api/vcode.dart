@@ -14,13 +14,14 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 /// - rotation_deg: 反時計回りに画像を起こす回転 (0/90/180/270)。
 ///   Android は通常 sensorOrientation=90 のとき 90 を渡す。
 /// - guide_frac: 回転後画像の幅に対するガイド枠幅の比 (UI のガイド枠と同じ値を渡す)
-VcodeScanReport vcodeScanGray({
+Future<VcodeScanReport> vcodeScanGray({
   required List<int> y,
   required int width,
   required int height,
   required int stride,
   required int rotationDeg,
   required double guideFrac,
+  required bool debugDump,
 }) => RustLib.instance.api.crateApiVcodeVcodeScanGray(
   y: y,
   width: width,
@@ -28,6 +29,7 @@ VcodeScanReport vcodeScanGray({
   stride: stride,
   rotationDeg: rotationDeg,
   guideFrac: guideFrac,
+  debugDump: debugDump,
 );
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<VcodeTx>>
@@ -88,6 +90,11 @@ class VcodeScanReport {
   final int blocksTotal;
   final String? error;
 
+  /// debug_dump=true のとき、回転処理後のグレースケール画像 (PC 側解析用)
+  final Uint8List? debugGray;
+  final int debugW;
+  final int debugH;
+
   const VcodeScanReport({
     required this.detected,
     required this.frameSeq,
@@ -96,6 +103,9 @@ class VcodeScanReport {
     required this.blocksOk,
     required this.blocksTotal,
     this.error,
+    this.debugGray,
+    required this.debugW,
+    required this.debugH,
   });
 
   @override
@@ -106,7 +116,10 @@ class VcodeScanReport {
       packets.hashCode ^
       blocksOk.hashCode ^
       blocksTotal.hashCode ^
-      error.hashCode;
+      error.hashCode ^
+      debugGray.hashCode ^
+      debugW.hashCode ^
+      debugH.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -119,5 +132,8 @@ class VcodeScanReport {
           packets == other.packets &&
           blocksOk == other.blocksOk &&
           blocksTotal == other.blocksTotal &&
-          error == other.error;
+          error == other.error &&
+          debugGray == other.debugGray &&
+          debugW == other.debugW &&
+          debugH == other.debugH;
 }

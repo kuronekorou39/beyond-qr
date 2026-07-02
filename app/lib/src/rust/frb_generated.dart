@@ -145,13 +145,14 @@ abstract class RustLibApi extends BaseApi {
     required int minVersion,
   });
 
-  VcodeScanReport crateApiVcodeVcodeScanGray({
+  Future<VcodeScanReport> crateApiVcodeVcodeScanGray({
     required List<int> y,
     required int width,
     required int height,
     required int stride,
     required int rotationDeg,
     required double guideFrac,
+    required bool debugDump,
   });
 
   RustArcIncrementStrongCountFnType
@@ -670,17 +671,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   );
 
   @override
-  VcodeScanReport crateApiVcodeVcodeScanGray({
+  Future<VcodeScanReport> crateApiVcodeVcodeScanGray({
     required List<int> y,
     required int width,
     required int height,
     required int stride,
     required int rotationDeg,
     required double guideFrac,
+    required bool debugDump,
   }) {
-    return handler.executeSync(
-      SyncTask(
-        callFfi: () {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_list_prim_u_8_loose(y, serializer);
           sse_encode_u_32(width, serializer);
@@ -688,14 +690,28 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_u_32(stride, serializer);
           sse_encode_u_32(rotationDeg, serializer);
           sse_encode_f_64(guideFrac, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 17)!;
+          sse_encode_bool(debugDump, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 17,
+            port: port_,
+          );
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_vcode_scan_report,
           decodeErrorData: null,
         ),
         constMeta: kCrateApiVcodeVcodeScanGrayConstMeta,
-        argValues: [y, width, height, stride, rotationDeg, guideFrac],
+        argValues: [
+          y,
+          width,
+          height,
+          stride,
+          rotationDeg,
+          guideFrac,
+          debugDump,
+        ],
         apiImpl: this,
       ),
     );
@@ -703,7 +719,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   TaskConstMeta get kCrateApiVcodeVcodeScanGrayConstMeta => const TaskConstMeta(
     debugName: "vcode_scan_gray",
-    argNames: ["y", "width", "height", "stride", "rotationDeg", "guideFrac"],
+    argNames: [
+      "y",
+      "width",
+      "height",
+      "stride",
+      "rotationDeg",
+      "guideFrac",
+      "debugDump",
+    ],
   );
 
   RustArcIncrementStrongCountFnType
@@ -933,8 +957,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   VcodeScanReport dco_decode_vcode_scan_report(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 7)
-      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+    if (arr.length != 10)
+      throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
     return VcodeScanReport(
       detected: dco_decode_bool(arr[0]),
       frameSeq: dco_decode_u_32(arr[1]),
@@ -943,6 +967,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       blocksOk: dco_decode_u_32(arr[4]),
       blocksTotal: dco_decode_u_32(arr[5]),
       error: dco_decode_opt_String(arr[6]),
+      debugGray: dco_decode_opt_list_prim_u_8_strict(arr[7]),
+      debugW: dco_decode_u_32(arr[8]),
+      debugH: dco_decode_u_32(arr[9]),
     );
   }
 
@@ -1201,6 +1228,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_blocksOk = sse_decode_u_32(deserializer);
     var var_blocksTotal = sse_decode_u_32(deserializer);
     var var_error = sse_decode_opt_String(deserializer);
+    var var_debugGray = sse_decode_opt_list_prim_u_8_strict(deserializer);
+    var var_debugW = sse_decode_u_32(deserializer);
+    var var_debugH = sse_decode_u_32(deserializer);
     return VcodeScanReport(
       detected: var_detected,
       frameSeq: var_frameSeq,
@@ -1209,6 +1239,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       blocksOk: var_blocksOk,
       blocksTotal: var_blocksTotal,
       error: var_error,
+      debugGray: var_debugGray,
+      debugW: var_debugW,
+      debugH: var_debugH,
     );
   }
 
@@ -1489,6 +1522,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_u_32(self.blocksOk, serializer);
     sse_encode_u_32(self.blocksTotal, serializer);
     sse_encode_opt_String(self.error, serializer);
+    sse_encode_opt_list_prim_u_8_strict(self.debugGray, serializer);
+    sse_encode_u_32(self.debugW, serializer);
+    sse_encode_u_32(self.debugH, serializer);
   }
 
   @protected

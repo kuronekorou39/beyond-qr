@@ -730,15 +730,16 @@ fn wire__crate__api__qr__make_qr_impl(
     )
 }
 fn wire__crate__api__vcode__vcode_scan_gray_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
     data_len_: i32,
-) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
         flutter_rust_bridge::for_generated::TaskInfo {
             debug_name: "vcode_scan_gray",
-            port: None,
-            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
         },
         move || {
             let message = unsafe {
@@ -756,18 +757,22 @@ fn wire__crate__api__vcode__vcode_scan_gray_impl(
             let api_stride = <u32>::sse_decode(&mut deserializer);
             let api_rotation_deg = <u32>::sse_decode(&mut deserializer);
             let api_guide_frac = <f64>::sse_decode(&mut deserializer);
+            let api_debug_dump = <bool>::sse_decode(&mut deserializer);
             deserializer.end();
-            transform_result_sse::<_, ()>((move || {
-                let output_ok = Result::<_, ()>::Ok(crate::api::vcode::vcode_scan_gray(
-                    api_y,
-                    api_width,
-                    api_height,
-                    api_stride,
-                    api_rotation_deg,
-                    api_guide_frac,
-                ))?;
-                Ok(output_ok)
-            })())
+            move |context| {
+                transform_result_sse::<_, ()>((move || {
+                    let output_ok = Result::<_, ()>::Ok(crate::api::vcode::vcode_scan_gray(
+                        api_y,
+                        api_width,
+                        api_height,
+                        api_stride,
+                        api_rotation_deg,
+                        api_guide_frac,
+                        api_debug_dump,
+                    ))?;
+                    Ok(output_ok)
+                })())
+            }
         },
     )
 }
@@ -988,6 +993,9 @@ impl SseDecode for crate::api::vcode::VcodeScanReport {
         let mut var_blocksOk = <u32>::sse_decode(deserializer);
         let mut var_blocksTotal = <u32>::sse_decode(deserializer);
         let mut var_error = <Option<String>>::sse_decode(deserializer);
+        let mut var_debugGray = <Option<Vec<u8>>>::sse_decode(deserializer);
+        let mut var_debugW = <u32>::sse_decode(deserializer);
+        let mut var_debugH = <u32>::sse_decode(deserializer);
         return crate::api::vcode::VcodeScanReport {
             detected: var_detected,
             frame_seq: var_frameSeq,
@@ -996,6 +1004,9 @@ impl SseDecode for crate::api::vcode::VcodeScanReport {
             blocks_ok: var_blocksOk,
             blocks_total: var_blocksTotal,
             error: var_error,
+            debug_gray: var_debugGray,
+            debug_w: var_debugW,
+            debug_h: var_debugH,
         };
     }
 }
@@ -1017,6 +1028,7 @@ fn pde_ffi_dispatcher_primary_impl(
     // Codec=Pde (Serialization + dispatch), see doc to use other codecs
     match func_id {
         15 => wire__crate__api__simple__init_app_impl(port, ptr, rust_vec_len, data_len),
+        17 => wire__crate__api__vcode__vcode_scan_gray_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -1060,7 +1072,6 @@ fn pde_ffi_dispatcher_sync_impl(
         13 => wire__crate__api__vcode__VcodeTx_packet_count_impl(ptr, rust_vec_len, data_len),
         14 => wire__crate__api__simple__greet_impl(ptr, rust_vec_len, data_len),
         16 => wire__crate__api__qr__make_qr_impl(ptr, rust_vec_len, data_len),
-        17 => wire__crate__api__vcode__vcode_scan_gray_impl(ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -1161,6 +1172,9 @@ impl flutter_rust_bridge::IntoDart for crate::api::vcode::VcodeScanReport {
             self.blocks_ok.into_into_dart().into_dart(),
             self.blocks_total.into_into_dart().into_dart(),
             self.error.into_into_dart().into_dart(),
+            self.debug_gray.into_into_dart().into_dart(),
+            self.debug_w.into_into_dart().into_dart(),
+            self.debug_h.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -1360,6 +1374,9 @@ impl SseEncode for crate::api::vcode::VcodeScanReport {
         <u32>::sse_encode(self.blocks_ok, serializer);
         <u32>::sse_encode(self.blocks_total, serializer);
         <Option<String>>::sse_encode(self.error, serializer);
+        <Option<Vec<u8>>>::sse_encode(self.debug_gray, serializer);
+        <u32>::sse_encode(self.debug_w, serializer);
+        <u32>::sse_encode(self.debug_h, serializer);
     }
 }
 

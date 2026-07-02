@@ -87,7 +87,7 @@ impl Layout {
     }
 
     /// ブロック bi (行優先) の左上セル座標 (row, col)
-    fn block_origin(&self, bi: usize) -> (usize, usize) {
+    pub(crate) fn block_origin(&self, bi: usize) -> (usize, usize) {
         let by = bi / self.grid_w;
         let bx = bi % self.grid_w;
         (STRIP_H + by * self.block, bx * self.block)
@@ -185,6 +185,8 @@ impl Bitmap {
 pub enum FrameError {
     /// ビットマップ寸法が scale の整数倍でない、またはストリップ幅すら確保できない
     BadDimensions,
+    /// 探索窓内にコーナーマーカー候補が見つからない (0=TL,1=TR,2=BR,3=BL)
+    CornerNotFound(u8),
     /// 四隅マーカーが期待パターンと一致しない
     CornerMismatch,
     /// どのヘッダコピーも CRC を通らなかった
@@ -233,9 +235,21 @@ pub(crate) fn corner_origins(w: usize, h: usize) -> [(Corner, usize, usize); 4] 
     ]
 }
 
-/// ヘッダ領域のセルを行優先で列挙 (上ストリップのコーナー間)
-fn header_cells(w: usize) -> impl Iterator<Item = (usize, usize)> {
-    (0..STRIP_H).flat_map(move |r| (CORNER..w - CORNER).map(move |c| (r, c)))
+/// ヘッダ領域のセルを行優先で列挙 (上ストリップのコーナー間、行 0 のタイミング行を除く)
+pub(crate) fn header_cells(w: usize) -> impl Iterator<Item = (usize, usize)> {
+    (1..STRIP_H).flat_map(move |r| (CORNER..w - CORNER).map(move |c| (r, c)))
+}
+
+/// 較正パターンのセル値 (上端タイミング行と下ストリップで使用)。
+/// 周期パターン (市松/BWBW) は 2 セルずれても一致してしまい位置合わせの
+/// 位相トラップになるため、座標ハッシュによる擬似ランダム既知パターンを使う
+/// (自己相関が鋭く、1 セルのずれでも一致率が ~50% に落ちる)。
+pub(crate) fn calib_black(r: usize, c: usize) -> bool {
+    let mut x = (r as u32).wrapping_mul(0x9E37_79B1) ^ (c as u32).wrapping_mul(0x85EB_CA77);
+    x ^= x >> 13;
+    x = x.wrapping_mul(0xC2B2_AE3D);
+    x ^= x >> 16;
+    x & 1 == 1
 }
 
 /// バイト列を MSB-first のビット列にする
@@ -246,7 +260,7 @@ fn byte_bits(bytes: &[u8]) -> impl Iterator<Item = bool> + '_ {
 }
 
 /// ビット列 (MSB-first) をバイト列に戻す
-fn bits_to_bytes(bits: &[bool]) -> Vec<u8> {
+pub(crate) fn bits_to_bytes(bits: &[bool]) -> Vec<u8> {
     bits.chunks(8)
         .map(|ch| ch.iter().fold(0u8, |acc, &b| (acc << 1) | b as u8))
         .collect()
@@ -275,7 +289,12 @@ pub fn encode_frame(header: &FrameHeader, blocks: &[Vec<u8>], scale: usize) -> B
         }
     }
 
-    // ヘッダ: 領域に入るだけコピーを繰り返す (100 セル幅なら丁度 3 コピー)
+    // 上端タイミング行 (行 0、擬似ランダム較正パターン)
+    for c in CORNER..w - CORNER {
+        bm.fill_cell(scale, 0, c, calib_black(0, c));
+    }
+
+    // ヘッダ: 領域に入るだけコピーを繰り返す (100 セル幅なら行 1..6 に丁度 2 コピー)
     let hdr_bits: Vec<bool> = byte_bits(&header.serialize()).collect();
     let cells: Vec<(usize, usize)> = header_cells(w).collect();
     for (i, &(r, c)) in cells.iter().enumerate() {
@@ -286,10 +305,10 @@ pub fn encode_frame(header: &FrameHeader, blocks: &[Vec<u8>], scale: usize) -> B
         }
     }
 
-    // 下ストリップ: 市松の較正/タイミングパターン
+    // 下ストリップ: 擬似ランダム較正パターン
     for r in h - STRIP_H..h {
         for c in CORNER..w - CORNER {
-            bm.fill_cell(scale, r, c, (r + c) % 2 == 0);
+            bm.fill_cell(scale, r, c, calib_black(r, c));
         }
     }
 
@@ -314,7 +333,7 @@ pub fn encode_frame(header: &FrameHeader, blocks: &[Vec<u8>], scale: usize) -> B
 
 /// コーナーマーカーの許容一致率。実カメラ経由では境界セルの誤りが出るため
 /// 完全一致ではなくこの比率で判定する (CRC が最終防衛線なので緩くてよい)。
-const CORNER_MATCH_MIN: f32 = 0.85;
+pub(crate) const CORNER_MATCH_MIN: f32 = 0.85;
 
 /// 理想チャネルのビットマップからフレームをデコードする。
 /// 壊れたブロックは None として返し、読めたブロックだけ回収する。
@@ -438,8 +457,8 @@ mod tests {
         assert_eq!(l.block_bytes(), 50);
         assert_eq!(l.block_payload_len(), 48);
         assert_eq!(l.packet_size(), 44);
-        // ヘッダ領域 = 6 * (100-12) = 528 セル → 22byte*8=176bit が丁度 3 コピー
-        assert_eq!(header_cells(l.width()).count(), 528);
+        // ヘッダ領域 = 5 * (100-12) = 440 セル → 22byte*8=176bit が 2 コピー (+88 セル余り)
+        assert_eq!(header_cells(l.width()).count(), 440);
     }
 
     #[test]

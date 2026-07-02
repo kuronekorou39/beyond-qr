@@ -82,15 +82,32 @@ fn scan_recovers_from_perspective_and_noise() {
         (985.0, 950.0),  // br
         (205.0, 920.0),  // bl
     ];
-    let canvas = synth_camera_image(&frame_px, 1280, 1080, &dst, 0xFACE);
+    let mut canvas = synth_camera_image(&frame_px, 1280, 1080, &dst, 0xFACE);
+
+    // 実機で観測したクラッタを模擬: コード上方の暗い帯 (ブラウザのタブバー相当) と
+    // コード下方のテキスト状の黒い点列 (ページの説明文相当)
+    for y in 60..95 {
+        for x in 100..1100 {
+            canvas[y * 1280 + x] = 40;
+        }
+    }
+    for x in (250..900).step_by(7) {
+        for y in 985..997 {
+            if (x / 7) % 3 != 0 {
+                canvas[y * 1280 + x] = 20;
+                canvas[y * 1280 + x + 3] = 25;
+            }
+        }
+    }
+
     let img = GrayImage { w: 1280, h: 1080, data: &canvas };
 
-    // ガイドは真の 4 隅から最大 12px ずらす (ユーザーの構図ずれを模擬)
+    // ガイドは真の 4 隅から最大 25px ずらす (実機での構図ずれ相当)
     let guide = Quad {
-        tl: (dst[0].0 - 10.0, dst[0].1 + 8.0),
-        tr: (dst[1].0 + 12.0, dst[1].1 - 6.0),
-        br: (dst[2].0 + 9.0, dst[2].1 + 11.0),
-        bl: (dst[3].0 - 7.0, dst[3].1 - 12.0),
+        tl: (dst[0].0 - 22.0, dst[0].1 + 18.0),
+        tr: (dst[1].0 + 25.0, dst[1].1 - 15.0),
+        br: (dst[2].0 + 19.0, dst[2].1 + 24.0),
+        bl: (dst[3].0 - 17.0, dst[3].1 - 25.0),
     };
 
     let result = scan_frame(&img, &guide, layout).expect("スキャン失敗");

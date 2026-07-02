@@ -8,7 +8,7 @@
 //!   4. 共通デコード経路 (ヘッダ CRC / ブロック CRC / 部分回収) に流す
 //! 検出の完全自動化 (ガイドなし) とフレーム間トラッキングは次段。
 
-use crate::{decode_from_sampler, DecodedFrame, FrameError, Layout, CORNER, STRIP_H};
+use crate::{bits_to_bytes, DecodedFrame, FrameError, Layout, CORNER, STRIP_H};
 
 /// 画像座標 (x, y) の 4 点。tl→tr→br→bl の順。
 #[derive(Clone, Copy, Debug)]
@@ -170,51 +170,9 @@ fn otsu(values: impl Iterator<Item = u8>) -> u8 {
     (((first_t + last_t) / 2) + 1).min(255) as u8
 }
 
-/// ガイド近傍の窓からコーナーマーカーの外角を精密化する。
-/// 窓内を Otsu で二値化 → ノイズ除去 (黒 8 近傍 4 個以上) →
-/// コーナー方向 dir へ最も突き出た黒画素を外角とみなす。
-fn refine_corner(
-    img: &GrayImage,
-    guess: (f32, f32),
-    win: isize,
-    dir: (f32, f32),
-) -> Option<(f32, f32)> {
-    let cx = guess.0 as isize;
-    let cy = guess.1 as isize;
-    let x0 = (cx - win).max(0) as usize;
-    let y0 = (cy - win).max(0) as usize;
-    let x1 = ((cx + win) as usize).min(img.w - 1);
-    let y1 = ((cy + win) as usize).min(img.h - 1);
-    if x1 <= x0 + 2 || y1 <= y0 + 2 {
-        return None;
-    }
-
-    let thr = otsu((y0..=y1).flat_map(|y| (x0..=x1).map(move |x| (x, y))).map(|(x, y)| img.get(x, y)));
-    let is_black = |x: usize, y: usize| img.get(x, y) < thr;
-
-    let mut best: Option<((f32, f32), f32)> = None;
-    for y in y0 + 1..y1 {
-        for x in x0 + 1..x1 {
-            if !is_black(x, y) {
-                continue;
-            }
-            // 孤立ノイズ除去: 8 近傍に黒が 4 個未満なら無視
-            let neighbors = [
-                (x - 1, y - 1), (x, y - 1), (x + 1, y - 1),
-                (x - 1, y), (x + 1, y),
-                (x - 1, y + 1), (x, y + 1), (x + 1, y + 1),
-            ];
-            if neighbors.iter().filter(|&&(nx, ny)| is_black(nx, ny)).count() < 4 {
-                continue;
-            }
-            let score = x as f32 * dir.0 + y as f32 * dir.1;
-            if best.map_or(true, |(_, s)| score > s) {
-                best = Some(((x as f32 + 0.5, y as f32 + 0.5), score));
-            }
-        }
-    }
-    best.map(|(p, _)| p)
-}
+// (旧 refine_corner 方式は「窓内で最も隅方向に突き出た黒画素」を拾うため、
+//  ブラウザ UI や周辺テキストなどのクラッタを誤認して廃止。
+//  現在はガイド枠を初期値に、既知セル一致スコアの粗→細探索で直接合わせる。)
 
 /// スキャン結果 (デコード結果 + 推定ホモグラフィ。トラッキングで次フレームのガイドに使う)
 pub struct ScanResult {
@@ -222,9 +180,8 @@ pub struct ScanResult {
     pub homography: Homography,
 }
 
-/// 値が既知のセル一覧 (コーナーマーカー 4 個 + 下ストリップの市松)。
-/// ホモグラフィ精密化のスコア評価に使う。
-fn known_cells(layout: Layout) -> Vec<(usize, usize, bool)> {
+/// コーナーマーカーのセル一覧 (構造が低周波で、粗い位置合わせのスコアに向く)
+fn corner_cells(layout: Layout) -> Vec<(usize, usize, bool)> {
     let (w, h) = (layout.width(), layout.height());
     let mut cells = Vec::new();
     for (which, or, oc) in crate::corner_origins(w, h) {
@@ -234,16 +191,29 @@ fn known_cells(layout: Layout) -> Vec<(usize, usize, bool)> {
             }
         }
     }
+    cells
+}
+
+/// コーナー + 上端タイミング行 + 下ストリップの市松。
+/// 高周波パターンが上下両側にあることで、水平方向のスケール誤差を拘束する。
+fn known_cells(layout: Layout) -> Vec<(usize, usize, bool)> {
+    let (w, h) = (layout.width(), layout.height());
+    let mut cells = corner_cells(layout);
+    for c in CORNER..w - CORNER {
+        cells.push((0, c, crate::calib_black(0, c)));
+    }
     for r in h - STRIP_H..h {
         for c in CORNER..w - CORNER {
-            cells.push((r, c, (r + c) % 2 == 0));
+            cells.push((r, c, crate::calib_black(r, c)));
         }
     }
     cells
 }
 
-/// 4 隅の画像座標を座標降下で微調整し、既知セルの一致数を最大化する。
-/// 粗い外角推定 (±2px 級の誤差) を吸収し、格子中央での半セル級のずれを防ぐ。
+/// ガイド枠 (数十 px ずれていてよい) を初期値として、4 隅を粗→細の座標降下で動かし、
+/// 既知セルの一致数を最大化するホモグラフィを求める。
+/// 粗いステップ (8/4px) ではコーナーマーカーのみ、細かいステップでは市松も加えて評価する。
+/// 周辺クラッタ (ブラウザ UI 等) の影響を受けない: スコアは常にコード内部の既知セルで測る。
 fn refine_homography(
     img: &GrayImage,
     corners: &mut [(f32, f32); 4],
@@ -252,9 +222,27 @@ fn refine_homography(
 ) -> Option<Homography> {
     let (wc, hc) = (layout.width() as f32, layout.height() as f32);
     let src = [(0.0, 0.0), (wc, 0.0), (wc, hc), (0.0, hc)];
-    let cells = known_cells(layout);
+    let fine = known_cells(layout);
 
-    let score = |quad: &[(f32, f32); 4]| -> Option<(Homography, usize)> {
+    // コーナーごとのマーカーセル (quad 順 tl, tr, br, bl に並べ替え)
+    let per_corner: Vec<Vec<(usize, usize, bool)>> = {
+        let origins = crate::corner_origins(layout.width(), layout.height()); // TL,TR,BL,BR
+        [0usize, 1, 3, 2] // quad k → origins index
+            .iter()
+            .map(|&i| {
+                let (which, or, oc) = origins[i];
+                let mut cells = Vec::with_capacity(CORNER * CORNER);
+                for r in 0..CORNER {
+                    for c in 0..CORNER {
+                        cells.push((or + r, oc + c, crate::corner_black(which, r, c)));
+                    }
+                }
+                cells
+            })
+            .collect()
+    };
+
+    let score = |quad: &[(f32, f32); 4], cells: &[(usize, usize, bool)]| -> Option<(Homography, usize)> {
         let hm = Homography::from_quad(&src, quad)?;
         let n = cells
             .iter()
@@ -266,21 +254,26 @@ fn refine_homography(
         Some((hm, n))
     };
 
-    let mut best = score(corners)?;
-    // 1px 刻み → 0.5px 刻みの 2 ラウンド。各ラウンドで 4 隅を順に最適化する。
-    for &step in &[1.0f32, 0.5] {
+    // 粗探索: 各コーナーを独立に全数探索 (±32px, 2px 刻み)。
+    // 評価はそのコーナーのマーカーセルのみ。全数なのでマーカーの自己相似による
+    // 局所最適に捕まらない。2 ラウンドでコーナー間の相互作用を収束させる。
+    for _ in 0..2 {
         for k in 0..4 {
             let base = corners[k];
-            for dy in -3..=3 {
-                for dx in -3..=3 {
+            let mut best_n = match score(corners, &per_corner[k]) {
+                Some((_, n)) => n,
+                None => 0,
+            };
+            for dy in (-32i32..=32).step_by(2) {
+                for dx in (-32i32..=32).step_by(2) {
                     if dx == 0 && dy == 0 {
                         continue;
                     }
                     let mut cand = *corners;
-                    cand[k] = (base.0 + dx as f32 * step, base.1 + dy as f32 * step);
-                    if let Some((hm, n)) = score(&cand) {
-                        if n > best.1 {
-                            best = (hm, n);
+                    cand[k] = (base.0 + dx as f32, base.1 + dy as f32);
+                    if let Some((_, n)) = score(&cand, &per_corner[k]) {
+                        if n > best_n {
+                            best_n = n;
                             corners[k] = cand[k];
                         }
                     }
@@ -288,7 +281,34 @@ fn refine_homography(
             }
         }
     }
-    Some(best.0)
+
+    // 微調整: 全既知セル (コーナー + 擬似ランダム較正) で座標降下
+    let mut best_h = None;
+    for &step in &[2.0f32, 1.0, 0.5] {
+        for _ in 0..2 {
+            for k in 0..4 {
+                let base = corners[k];
+                let mut best = score(corners, &fine)?;
+                for dy in -2i32..=2 {
+                    for dx in -2i32..=2 {
+                        if dx == 0 && dy == 0 {
+                            continue;
+                        }
+                        let mut cand = *corners;
+                        cand[k] = (base.0 + dx as f32 * step, base.1 + dy as f32 * step);
+                        if let Some((hm, n)) = score(&cand, &fine) {
+                            if n > best.1 {
+                                best = (hm, n);
+                                corners[k] = cand[k];
+                            }
+                        }
+                    }
+                }
+                best_h = Some(best.0);
+            }
+        }
+    }
+    best_h
 }
 
 /// ガイド枠 (おおよその 4 隅) を頼りに、グレースケール画像から vcode フレームをスキャンする。
@@ -302,19 +322,8 @@ pub fn scan_frame(
 ) -> Result<ScanResult, FrameError> {
     let (wc, hc) = (layout.width() as f32, layout.height() as f32);
 
-    // ガイドからセル 1 個のピクセルサイズを見積もり、探索窓を決める
-    let guide_w = ((guide.tr.0 - guide.tl.0).powi(2) + (guide.tr.1 - guide.tl.1).powi(2)).sqrt();
-    let cell_px = guide_w / wc;
-    let win = ((cell_px * CORNER as f32 * 1.5) as isize).max(8);
-
-    // 各隅を精密化 (dir = そのコーナーが突き出ている方向)
-    let tl = refine_corner(img, guide.tl, win, (-1.0, -1.0)).ok_or(FrameError::CornerMismatch)?;
-    let tr = refine_corner(img, guide.tr, win, (1.0, -1.0)).ok_or(FrameError::CornerMismatch)?;
-    let br = refine_corner(img, guide.br, win, (1.0, 1.0)).ok_or(FrameError::CornerMismatch)?;
-    let bl = refine_corner(img, guide.bl, win, (-1.0, 1.0)).ok_or(FrameError::CornerMismatch)?;
-
-    // 初期ホモグラフィで粗くサンプリングし、二値化閾値を得る
-    let mut corners = [tl, tr, br, bl];
+    // ガイド枠をそのまま初期 4 隅とする (粗→細探索が数十 px のずれを吸収する)
+    let mut corners = [guide.tl, guide.tr, guide.br, guide.bl];
     let hmat0 = Homography::from_quad(
         &[(0.0, 0.0), (wc, 0.0), (wc, hc), (0.0, hc)],
         &corners,
@@ -337,13 +346,78 @@ pub fn scan_frame(
     let hmat = refine_homography(img, &mut corners, layout, thr0)
         .ok_or(FrameError::CornerMismatch)?;
 
-    // 精密化後のホモグラフィで全セルを再サンプリング
-    let values = sample_all(&hmat);
-    let thr = otsu(values.iter().copied());
+    // 精密化後のホモグラフィで二値化閾値を確定
+    let thr = otsu(sample_all(&hmat).iter().copied()) as f32;
 
-    let frame = decode_from_sampler(&|r, c| values[r * w + c] < thr, w, h)?;
-    if frame.header.layout != layout {
+    // セル (row+dy, col+dx) を実数座標でサンプリング (dx, dy はサブセルオフセット)
+    let sample = |r: usize, c: usize, dx: f32, dy: f32| -> bool {
+        let (x, y) = hmat.map(c as f32 + 0.5 + dx, r as f32 + 0.5 + dy);
+        img.bilinear(x, y) < thr
+    };
+
+    // 四隅マーカーの照合 (オフセットなし)
+    let mut matched = 0usize;
+    let corner_total = 4 * CORNER * CORNER;
+    for (which, or, oc) in crate::corner_origins(w, h) {
+        for r in 0..CORNER {
+            for c in 0..CORNER {
+                if sample(or + r, oc + c, 0.0, 0.0) == crate::corner_black(which, r, c) {
+                    matched += 1;
+                }
+            }
+        }
+    }
+    if (matched as f32) < crate::CORNER_MATCH_MIN * corner_total as f32 {
+        return Err(FrameError::CornerMismatch);
+    }
+
+    // 残留する半セル級の系統ずれを、CRC を正解判定器としたサブセルオフセット
+    // リトライで領域ごとに吸収する (ヘッダ/各ブロックで独立に最良オフセットを探す)。
+    // 中心から近い順の 5x5 格子 (±0.5 セル)。
+    const STEPS: [f32; 5] = [0.0, 0.25, -0.25, 0.5, -0.5];
+    let offs: Vec<(f32, f32)> = STEPS
+        .iter()
+        .flat_map(|&dy| STEPS.iter().map(move |&dx| (dx, dy)))
+        .collect();
+
+    // ヘッダ: 各オフセット x 各コピーで最初に CRC が通ったものを採用
+    let hdr_cells: Vec<(usize, usize)> = crate::header_cells(w).collect();
+    let copy_bits = crate::HEADER_LEN * 8;
+    let header = offs
+        .iter()
+        .find_map(|&(dx, dy)| {
+            let bits: Vec<bool> = hdr_cells.iter().map(|&(r, c)| sample(r, c, dx, dy)).collect();
+            (0..bits.len() / copy_bits).find_map(|k| {
+                let bytes = bits_to_bytes(&bits[k * copy_bits..(k + 1) * copy_bits]);
+                crate::FrameHeader::deserialize(&bytes)
+            })
+        })
+        .ok_or(FrameError::HeaderNotFound)?;
+    if header.layout != layout || header.bits_per_cell != 1 {
         return Err(FrameError::LayoutMismatch);
     }
-    Ok(ScanResult { frame, homography: hmat })
+
+    // ブロック: 同様にオフセットリトライ付きで CRC が通ったものだけ回収
+    let blocks = (0..layout.block_count())
+        .map(|bi| {
+            let (or, oc) = layout.block_origin(bi);
+            offs.iter().find_map(|&(dx, dy)| {
+                let bits: Vec<bool> = (0..layout.block * layout.block)
+                    .map(|i| sample(or + i / layout.block, oc + i % layout.block, dx, dy))
+                    .collect();
+                let bytes = bits_to_bytes(&bits);
+                let (payload, crc) = bytes.split_at(layout.block_payload_len());
+                if crate::crc16(payload) == u16::from_be_bytes([crc[0], crc[1]]) {
+                    Some(payload.to_vec())
+                } else {
+                    None
+                }
+            })
+        })
+        .collect();
+
+    Ok(ScanResult {
+        frame: DecodedFrame { header, blocks },
+        homography: hmat,
+    })
 }

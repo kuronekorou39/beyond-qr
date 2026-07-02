@@ -62,13 +62,27 @@ fn main() {
             canvas[y * cw + x] = (v * gain + noise).clamp(0.0, 255.0) as u8;
         }
     }
+    // クラッタ (タブバー相当の帯 + テキスト状点列) を追加
+    for y in 60..95 {
+        for x in 100..1100 {
+            canvas[y * 1280 + x] = 40;
+        }
+    }
+    for x in (250..900).step_by(7) {
+        for y in 985..997 {
+            if (x / 7) % 3 != 0 {
+                canvas[y * 1280 + x] = 20;
+                canvas[y * 1280 + x + 3] = 25;
+            }
+        }
+    }
     let img = GrayImage { w: cw, h: ch, data: &canvas };
 
     let guide = Quad {
-        tl: (dst[0].0 - 10.0, dst[0].1 + 8.0),
-        tr: (dst[1].0 + 12.0, dst[1].1 - 6.0),
-        br: (dst[2].0 + 9.0, dst[2].1 + 11.0),
-        bl: (dst[3].0 - 7.0, dst[3].1 - 12.0),
+        tl: (dst[0].0 - 22.0, dst[0].1 + 18.0),
+        tr: (dst[1].0 + 25.0, dst[1].1 - 15.0),
+        br: (dst[2].0 + 19.0, dst[2].1 + 24.0),
+        bl: (dst[3].0 - 17.0, dst[3].1 - 25.0),
     };
 
     match scan_frame(&img, &guide, layout) {
