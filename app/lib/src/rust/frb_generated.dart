@@ -144,6 +144,8 @@ abstract class RustLibApi extends BaseApi {
   VcodeTx crateApiVcodeVcodeTxNew({
     required List<int> payload,
     required int extraRepair,
+    required int gridW,
+    required int gridH,
   });
 
   int crateApiVcodeVcodeTxPacketCount({required VcodeTx that});
@@ -633,6 +635,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   VcodeTx crateApiVcodeVcodeTxNew({
     required List<int> payload,
     required int extraRepair,
+    required int gridW,
+    required int gridH,
   }) {
     return handler.executeSync(
       SyncTask(
@@ -640,6 +644,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_list_prim_u_8_loose(payload, serializer);
           sse_encode_u_32(extraRepair, serializer);
+          sse_encode_u_8(gridW, serializer);
+          sse_encode_u_8(gridH, serializer);
           return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 14)!;
         },
         codec: SseCodec(
@@ -648,7 +654,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: null,
         ),
         constMeta: kCrateApiVcodeVcodeTxNewConstMeta,
-        argValues: [payload, extraRepair],
+        argValues: [payload, extraRepair, gridW, gridH],
         apiImpl: this,
       ),
     );
@@ -656,7 +662,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   TaskConstMeta get kCrateApiVcodeVcodeTxNewConstMeta => const TaskConstMeta(
     debugName: "VcodeTx_new",
-    argNames: ["payload", "extraRepair"],
+    argNames: ["payload", "extraRepair", "gridW", "gridH"],
   );
 
   @override

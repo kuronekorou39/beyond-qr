@@ -58,6 +58,13 @@ impl Layout {
     /// デフォルトレイアウト: 100x92 セル、20 ブロック、実効 880 byte/フレーム
     pub const V0: Layout = Layout { block: 20, grid_w: 5, grid_h: 4 };
 
+    /// 高密度レイアウト: 140x132 セル、42 ブロック、実効 1848 byte/フレーム。
+    /// カメラ 1080p 解析前提 (720p ではセルが 4px 前後になり限界)。
+    pub const V1_DENSE: Layout = Layout { block: 20, grid_w: 7, grid_h: 6 };
+
+    /// 受信側がヘッダ確定前に試すレイアウト候補 (優先順)
+    pub const CANDIDATES: [Layout; 2] = [Layout::V1_DENSE, Layout::V0];
+
     pub fn width(&self) -> usize {
         self.grid_w * self.block
     }

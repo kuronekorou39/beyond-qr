@@ -1,7 +1,7 @@
 //! 実機 E2E テスト用: 本物の RaptorQ パケットを載せた vcode フレーム列を PNG で生成し、
 //! ブラウザでアニメーション表示する HTML も出力する。
 //!
-//! 実行: cargo run -p beyond-qr-vcode --example render_stream [payload_bytes]
+//! 実行: cargo run -p beyond-qr-vcode --example render_stream [payload_bytes] [grid_w] [grid_h]
 //! 出力: vcode/samples/stream/tx_NNN.png + vcode/samples/stream/index.html (gitignore 済み)
 //!
 //! PC でフルスクリーン表示し、スマホアプリの「V受信」をかざして受信を確認する。
@@ -27,6 +27,8 @@ fn main() {
         .nth(1)
         .and_then(|s| s.parse().ok())
         .unwrap_or(20_000);
+    let grid_w: usize = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(5);
+    let grid_h: usize = std::env::args().nth(3).and_then(|s| s.parse().ok()).unwrap_or(4);
 
     // 決定的だが圧縮しにくいペイロード (実データ相当)
     let payload: Vec<u8> = {
@@ -39,7 +41,7 @@ fn main() {
             .collect()
     };
 
-    let layout = Layout::V0;
+    let layout = Layout { block: 20, grid_w, grid_h };
     let source_packets = payload_len.div_ceil(layout.packet_size());
     let encoder = Encoder::new(&payload, layout.packet_size() as u16, (source_packets / 2) as u32);
     let bc = layout.block_count();
@@ -84,7 +86,7 @@ fn main() {
 <div id="info"></div>
 <script>
   const N = {n_frames};
-  let fps = Number(new URLSearchParams(location.search).get('fps') || 10);
+  let fps = Number(new URLSearchParams(location.search).get('fps') || 20);
   let i = 0, pass = 0;
   setInterval(() => {{
     i = (i + 1) % N;

@@ -60,7 +60,8 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
           orElse: () => cams.first);
       final cam = CameraController(
         back,
-        ResolutionPreset.high, // 720p: 解像度と処理速度のバランス
+        // 1080p: 高密度レイアウト (7x6) はセル解像度が必要 (720p だと ~4px/セルで限界)
+        ResolutionPreset.veryHigh,
         enableAudio: false,
         imageFormatGroup: ImageFormatGroup.yuv420,
       );

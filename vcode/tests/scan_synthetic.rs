@@ -123,6 +123,34 @@ fn scan_recovers_from_perspective_and_noise() {
 }
 
 #[test]
+fn scan_dense_layout_at_1080p_cell_resolution() {
+    // 7x6 高密度レイアウト (140x132 セル)。1080p 実機相当の ~5.9px/セルで検証する。
+    let layout = Layout::V1_DENSE;
+    let (header, blocks) = test_frame(layout, 0x99);
+    let frame_px = encode_frame(&header, &blocks, 6); // 840x792 px
+
+    let dst = [
+        (180.0f32, 130.0),
+        (1010.0, 155.0),
+        (985.0, 950.0),
+        (205.0, 920.0),
+    ];
+    let canvas = synth_camera_image(&frame_px, 1280, 1080, &dst, 0x7777);
+    let img = GrayImage { w: 1280, h: 1080, data: &canvas };
+    let guide = Quad {
+        tl: (dst[0].0 - 14.0, dst[0].1 + 12.0),
+        tr: (dst[1].0 + 15.0, dst[1].1 - 10.0),
+        br: (dst[2].0 + 12.0, dst[2].1 + 15.0),
+        bl: (dst[3].0 - 11.0, dst[3].1 - 14.0),
+    };
+
+    let result = scan_frame(&img, &guide, layout).expect("高密度レイアウトのスキャン失敗");
+    assert_eq!(result.frame.header, header);
+    let ok = result.frame.blocks.iter().filter(|b| b.is_some()).count();
+    assert!(ok >= 39, "高密度の回収ブロックが少なすぎる: {ok}/42");
+}
+
+#[test]
 fn tracked_scan_follows_small_motion() {
     use beyond_qr_vcode::scan::scan_frame_tracked;
     let layout = Layout::V0;

@@ -25,8 +25,9 @@ class _VcodeSendScreenState extends State<VcodeSendScreen> {
   String? _pickedName;
   int _pickedSize = 0;
 
-  int _fps = 10;
+  int _fps = 20; // 実測: カメラ30fpsに対し 20fps+追従が最適 (2026-07-02)
   double _repairRate = 0.5; // リペアパケット比率 (source 比)
+  String _grid = '7x6'; // ブロック格子 (7x6=高密度 1848B/フレーム, 5x4=標準 880B)
 
   bool _running = false;
   int _seq = 0;
@@ -88,9 +89,12 @@ class _VcodeSendScreenState extends State<VcodeSendScreen> {
       return;
     }
     final sourcePackets = (payload.length / 44).ceil();
+    final gridParts = _grid.split('x');
     final tx = VcodeTx(
         payload: payload,
-        extraRepair: (sourcePackets * _repairRate).ceil());
+        extraRepair: (sourcePackets * _repairRate).ceil(),
+        gridW: int.parse(gridParts[0]),
+        gridH: int.parse(gridParts[1]));
     final seq = ++_seq;
     setState(() {
       _tx = tx;
@@ -108,7 +112,7 @@ class _VcodeSendScreenState extends State<VcodeSendScreen> {
         _pickedName ?? 'message.txt',
         _pickedName == null ? 'text/plain;charset=utf-8' : 'application/octet-stream',
         payload.length,
-        'vcode',
+        'vcode $_grid',
         '${_fps}fps'));
     await WakelockPlus.enable();
     try {
@@ -171,7 +175,7 @@ class _VcodeSendScreenState extends State<VcodeSendScreen> {
                   child: _current == null
                       ? const CircularProgressIndicator()
                       : AspectRatio(
-                          aspectRatio: 100 / 92,
+                          aspectRatio: _current!.width / _current!.height,
                           child: RawImage(
                             image: _current,
                             fit: BoxFit.contain,
@@ -228,6 +232,21 @@ class _VcodeSendScreenState extends State<VcodeSendScreen> {
                   _pickedSize = 0;
                 }),
               ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            const Text('格子'),
+            const SizedBox(width: 12),
+            SegmentedButton<String>(
+              segments: const [
+                ButtonSegment(value: '5x4', label: Text('5x4 標準')),
+                ButtonSegment(value: '7x6', label: Text('7x6 高密度')),
+              ],
+              selected: {_grid},
+              onSelectionChanged: (s) => setState(() => _grid = s.first),
+            ),
           ],
         ),
         const SizedBox(height: 8),

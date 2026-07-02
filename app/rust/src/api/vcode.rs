@@ -25,10 +25,14 @@ pub struct VcodeFrameImage {
 
 impl VcodeTx {
     /// payload を vcode 用に符号化する。extra_repair はリペアパケット追加数。
-    /// packet_size はレイアウトから決まる (V0 = 44 バイト)。
+    /// grid_w x grid_h はブロック格子 (5x4=標準, 7x6=高密度)。packet_size は 44 バイト固定。
     #[flutter_rust_bridge::frb(sync)]
-    pub fn new(payload: Vec<u8>, extra_repair: u32) -> VcodeTx {
-        let layout = vcode::Layout::V0;
+    pub fn new(payload: Vec<u8>, extra_repair: u32, grid_w: u8, grid_h: u8) -> VcodeTx {
+        let layout = vcode::Layout {
+            block: 20,
+            grid_w: grid_w.clamp(2, 12) as usize,
+            grid_h: grid_h.clamp(2, 12) as usize,
+        };
         VcodeTx {
             encoder: fountain::Encoder::new(&payload, layout.packet_size() as u16, extra_repair),
             layout,
@@ -158,8 +162,8 @@ fn rotate_y_plane(y: &[u8], w: usize, h: usize, stride: usize, rot: u32) -> (Vec
 /// - guide_frac: 回転後画像の幅に対するガイド枠幅の比 (UI のガイド枠と同じ値を渡す)
 #[flutter_rust_bridge::frb(opaque)]
 pub struct VcodeRx {
-    /// 直近成功時の (回転 deg, 精密化後の 4 隅)
-    last: Option<(u32, [(f32, f32); 4])>,
+    /// 直近成功時の (回転 deg, レイアウト, 精密化後の 4 隅)
+    last: Option<(u32, vcode::Layout, [(f32, f32); 4])>,
 }
 
 impl VcodeRx {
@@ -186,42 +190,44 @@ impl VcodeRx {
         if stride < w || y.len() < stride * h {
             return fail("Y プレーン寸法不正");
         }
-        let layout = vcode::Layout::V0;
 
-        // トラッキング: 前回成功した回転・4 隅から追従を試す
-        if let Some((rot, corners)) = self.last {
+        // トラッキング: 前回成功した回転・レイアウト・4 隅から追従を試す
+        if let Some((rot, layout, corners)) = self.last {
             let (gray, rw, rh) = rotate_y_plane(&y, w, h, stride, rot);
             let img = GrayImage { w: rw, h: rh, data: &gray };
             if let Ok(result) = scan_frame_tracked(&img, &corners, layout) {
-                self.last = Some((rot, result.corners));
+                self.last = Some((rot, layout, result.corners));
                 return success(result, true, layout);
             }
             // 追従失敗 → フル探索へフォールバック (ロック解除はフル探索も失敗した時)
         }
 
-        // フル探索: 与えられた回転で失敗したら 180 度違いも試す (回転方向の系統誤差対策)
+        // フル探索: 回転 (指定値と 180 度違い) x レイアウト候補を順に試す。
+        // レイアウトはヘッダにも載っているが、格子を張る前に既知セル座標が必要なので候補試行する。
         let mut errors = Vec::new();
         for rot in [rotation_deg % 360, (rotation_deg + 180) % 360] {
             let (gray, rw, rh) = rotate_y_plane(&y, w, h, stride, rot);
-
-            // ガイド枠: 中央配置、幅 = guide_frac * 画像幅、アスペクトはレイアウト準拠
-            let gw = (guide_frac.clamp(0.2, 1.0) * rw as f64) as f32;
-            let gh = (gw * layout.height() as f32 / layout.width() as f32).min(rh as f32 * 0.95);
-            let cx = rw as f32 / 2.0;
-            let cy = rh as f32 / 2.0;
-            let guide = Quad {
-                tl: (cx - gw / 2.0, cy - gh / 2.0),
-                tr: (cx + gw / 2.0, cy - gh / 2.0),
-                br: (cx + gw / 2.0, cy + gh / 2.0),
-                bl: (cx - gw / 2.0, cy + gh / 2.0),
-            };
-
             let img = GrayImage { w: rw, h: rh, data: &gray };
-            match scan_frame(&img, &guide, layout) {
-                Err(e) => errors.push(format!("rot{rot}:{e:?}")),
-                Ok(result) => {
-                    self.last = Some((rot, result.corners));
-                    return success(result, false, layout);
+
+            for layout in vcode::Layout::CANDIDATES {
+                // ガイド枠: 中央配置、幅 = guide_frac * 画像幅、アスペクトはレイアウト準拠
+                let gw = (guide_frac.clamp(0.2, 1.0) * rw as f64) as f32;
+                let gh = (gw * layout.height() as f32 / layout.width() as f32).min(rh as f32 * 0.95);
+                let cx = rw as f32 / 2.0;
+                let cy = rh as f32 / 2.0;
+                let guide = Quad {
+                    tl: (cx - gw / 2.0, cy - gh / 2.0),
+                    tr: (cx + gw / 2.0, cy - gh / 2.0),
+                    br: (cx + gw / 2.0, cy + gh / 2.0),
+                    bl: (cx - gw / 2.0, cy + gh / 2.0),
+                };
+
+                match scan_frame(&img, &guide, layout) {
+                    Err(e) => errors.push(format!("rot{rot}/{}x{}:{e:?}", layout.grid_w, layout.grid_h)),
+                    Ok(result) => {
+                        self.last = Some((rot, layout, result.corners));
+                        return success(result, false, layout);
+                    }
                 }
             }
             if debug_dump {

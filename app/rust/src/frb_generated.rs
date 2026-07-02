@@ -668,11 +668,15 @@ fn wire__crate__api__vcode__VcodeTx_new_impl(
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_payload = <Vec<u8>>::sse_decode(&mut deserializer);
             let api_extra_repair = <u32>::sse_decode(&mut deserializer);
+            let api_grid_w = <u8>::sse_decode(&mut deserializer);
+            let api_grid_h = <u8>::sse_decode(&mut deserializer);
             deserializer.end();
             transform_result_sse::<_, ()>((move || {
                 let output_ok = Result::<_, ()>::Ok(crate::api::vcode::VcodeTx::new(
                     api_payload,
                     api_extra_repair,
+                    api_grid_w,
+                    api_grid_h,
                 ))?;
                 Ok(output_ok)
             })())
