@@ -9,6 +9,7 @@ import 'receive_screen.dart';
 import 'history_screen.dart';
 import 'vcode_send_screen.dart';
 import 'vcode_receive_screen.dart';
+import 'calibration_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -67,7 +68,19 @@ class _HomeShellState extends State<HomeShell> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('beyond-qr')),
+      appBar: AppBar(
+        title: const Text('beyond-qr'),
+        actions: [
+          if (_hasCamera)
+            IconButton(
+              icon: const Icon(Icons.tune),
+              tooltip: '校正 (読み取り限界の確認)',
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const CalibrationScreen()),
+              ),
+            ),
+        ],
+      ),
       body: IndexedStack(index: _index, children: _screens),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _index,
