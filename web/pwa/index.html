@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>beyond-qr (PC)</title>
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <meta name="theme-color" content="#111318" />
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0; font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+      background: #111318; color: #e6e6e6;
+    }
+    header { padding: 0.6em 1em; background: #1a1d24; border-bottom: 1px solid #2a2e37; }
+    header h1 { margin: 0; font-size: 1.1em; }
+    main { padding: 1em; max-width: 900px; margin: 0 auto; }
+    .card { background: #1a1d24; border: 1px solid #2a2e37; border-radius: 8px; padding: 1em; margin: 0.8em 0; }
+    .ok { color: #5ad17a; } .ng { color: #f2777a; } .muted { color: #9aa0aa; }
+    button { background: #5b8cff; color: #fff; border: none; border-radius: 6px; padding: 0.6em 1.1em; font-size: 1em; cursor: pointer; }
+    button.secondary { background: #333842; }
+    code { background: #0e1015; padding: 0.1em 0.4em; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <header><h1>beyond-qr — PC 送受信 (PWA)</h1></header>
+  <main>
+    <div class="card" id="coreCard">
+      <b>コア自己診断</b>
+      <div id="coreStatus" class="muted">WASM 読み込み中...</div>
+    </div>
+    <div class="card">
+      <b>状態</b>
+      <div class="muted">この PWA は Rust コア (Fountain) を WASM で再利用し、スマホアプリと同じ
+      ストリーミング形式で PC↔スマホ 送受信します。まずコアの動作を検証中。</div>
+      <div class="muted" style="margin-top:0.5em">送信/受信 UI は次段で追加します。</div>
+    </div>
+  </main>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

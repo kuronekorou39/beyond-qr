@@ -1,0 +1,53 @@
+name: pages
+
+# PC 用 PWA (web/pwa) を GitHub Pages に配信する。
+# Rust コア (core-wasm=fountain) を wasm-pack で WASM 化し、pwa/pkg に出力してからデプロイ。
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/pwa/**"
+      - "core-wasm/**"
+      - "fountain/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build WASM (fountain core)
+        working-directory: core-wasm
+        run: wasm-pack build --target web --release --out-dir ../web/pwa/pkg
+
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/pwa
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,10 @@
+{
+  "name": "beyond-qr (PC)",
+  "short_name": "beyond-qr",
+  "description": "光学(QR/vcode)で PC↔スマホ をオフライン送受信",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#111318",
+  "theme_color": "#111318"
+}
