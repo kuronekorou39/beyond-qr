@@ -29,6 +29,7 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
   VcodeRx? _rx;
 
   FountainDecoder? _dec;
+  int? _packetSize; // 最初の回収パケットから推定 (シリアライズ長 - 4)
   Uint8List? _payload;
   String? _savedPath;
 
@@ -113,6 +114,9 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
         _firstDetected ??= DateTime.now();
         _blocksOk += report.blocksOk;
         _dec ??= FountainDecoder(otiBytes: report.oti);
+        if (_packetSize == null && report.packets.isNotEmpty) {
+          _packetSize = report.packets.first.length - 4;
+        }
         var done = false;
         for (final p in report.packets) {
           _packetsAdded++;
@@ -195,6 +199,7 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
     await _stopCamera();
     setState(() {
       _dec = null;
+      _packetSize = null;
       _payload = null;
       _savedPath = null;
       _framesSeen = 0;
@@ -263,9 +268,10 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
   Widget build(BuildContext context) {
     final cam = _cam;
     final received = _dec?.packetsReceived() ?? 0;
+    final ps = _packetSize ?? 44;
     final total = _dec == null
         ? null
-        : (_dec!.payloadSize().toInt() + 43) ~/ 44; // packet_size=44 での必要 source 数
+        : (_dec!.payloadSize().toInt() + ps - 1) ~/ ps; // 必要 source パケット数
 
     return Column(
       children: [

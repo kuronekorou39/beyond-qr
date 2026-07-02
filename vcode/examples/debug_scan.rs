@@ -23,7 +23,7 @@ fn main() {
     };
     let blocks: Vec<Vec<u8>> = (0..layout.block_count())
         .map(|bi| {
-            (0..layout.block_payload_len())
+            (0..layout.block_payload_len(1))
                 .map(|i| (i as u8).wrapping_mul(17).wrapping_add(bi as u8 ^ 0xC3))
                 .collect()
         })
@@ -160,7 +160,7 @@ fn main() {
                     .chunks(8)
                     .map(|ch| ch.iter().fold(0u8, |acc, &b| (acc << 1) | b as u8))
                     .collect();
-                let (payload, crc) = bytes.split_at(layout.block_payload_len());
+                let (payload, crc) = bytes.split_at(layout.block_payload_len(1));
                 if beyond_qr_vcode::crc16(payload) == u16::from_be_bytes([crc[0], crc[1]]) {
                     manual_ok += 1;
                 } else if bi < 3 {

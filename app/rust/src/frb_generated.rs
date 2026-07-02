@@ -670,6 +670,7 @@ fn wire__crate__api__vcode__VcodeTx_new_impl(
             let api_extra_repair = <u32>::sse_decode(&mut deserializer);
             let api_grid_w = <u8>::sse_decode(&mut deserializer);
             let api_grid_h = <u8>::sse_decode(&mut deserializer);
+            let api_bits_per_cell = <u8>::sse_decode(&mut deserializer);
             deserializer.end();
             transform_result_sse::<_, ()>((move || {
                 let output_ok = Result::<_, ()>::Ok(crate::api::vcode::VcodeTx::new(
@@ -677,6 +678,7 @@ fn wire__crate__api__vcode__VcodeTx_new_impl(
                     api_extra_repair,
                     api_grid_w,
                     api_grid_h,
+                    api_bits_per_cell,
                 ))?;
                 Ok(output_ok)
             })())

@@ -47,7 +47,7 @@ fn build_frames(encoder: &Encoder, layout: Layout) -> Vec<beyond_qr_vcode::Bitma
 fn e2e_no_loss() {
     let payload = test_payload();
     let layout = Layout::V0;
-    let encoder = Encoder::new(&payload, layout.packet_size() as u16, 0);
+    let encoder = Encoder::new(&payload, layout.packet_size(1) as u16, 0);
     let frames = build_frames(&encoder, layout);
 
     // OTI はフレームヘッダから取る (プロトコル外の共有を不要にする設計の確認)
@@ -67,12 +67,61 @@ fn e2e_no_loss() {
 }
 
 #[test]
+fn e2e_2bpc_with_padding() {
+    // 輝度 4 値: payload 98B に対し raptorq はシンボルを丸める (94→88, シリアライズ 92B)。
+    // 送信はゼロパディング、受信は OTI のシンボルサイズで切り出す規約を検証する。
+    let payload = test_payload();
+    let layout = Layout::V0;
+    let bpc = 2u8;
+    let encoder = Encoder::new(&payload, layout.packet_size(bpc) as u16, 0);
+    let payload_len = layout.block_payload_len(bpc);
+
+    let per_frame = layout.block_count();
+    let pc = encoder.packet_count();
+    let n_frames = pc.div_ceil(per_frame);
+    let mut oti = [0u8; 12];
+    oti.copy_from_slice(&encoder.oti_bytes());
+    let pkt_len = 4 + beyond_qr_fountain::oti_symbol_size(&oti) as usize;
+    assert!(pkt_len <= payload_len, "パケットがペイロードに入らない");
+
+    let mut decoder = Decoder::from_oti_bytes(&oti);
+    for f in 0..n_frames {
+        let header = FrameHeader {
+            version: VERSION,
+            bits_per_cell: bpc,
+            layout,
+            frame_seq: f as u16,
+            oti,
+        };
+        let blocks: Vec<Vec<u8>> = (0..per_frame)
+            .map(|j| {
+                let mut p = encoder.packet((f * per_frame + j) % pc);
+                p.resize(payload_len, 0);
+                p
+            })
+            .collect();
+        let bm = encode_frame(&header, &blocks, 1);
+        let decoded = decode_frame(&bm, 1).unwrap();
+        assert_eq!(decoded.header.bits_per_cell, 2);
+        for block in decoded.blocks.into_iter().flatten() {
+            // 受信側の切り出し規約
+            let packet = &block[..pkt_len];
+            if let Some(out) = decoder.add_packet(packet) {
+                assert_eq!(out, payload);
+                return;
+            }
+        }
+    }
+    panic!("2bpc + パディングで復元できなかった");
+}
+
+#[test]
 fn e2e_with_block_corruption() {
     let payload = test_payload();
     let layout = Layout::V0;
     // ブロック破損 30% を想定し、リペアを 60% 追加
-    let source_packets = PAYLOAD_LEN.div_ceil(layout.packet_size());
-    let encoder = Encoder::new(&payload, layout.packet_size() as u16, (source_packets * 6 / 10) as u32);
+    let source_packets = PAYLOAD_LEN.div_ceil(layout.packet_size(1));
+    let encoder = Encoder::new(&payload, layout.packet_size(1) as u16, (source_packets * 6 / 10) as u32);
     let frames = build_frames(&encoder, layout);
 
     let mut rng = Lcg(0xBEEF);

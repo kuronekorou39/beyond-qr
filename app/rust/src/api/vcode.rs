@@ -13,6 +13,7 @@ use beyond_qr_vcode::scan::{scan_frame, scan_frame_tracked, GrayImage, Quad};
 pub struct VcodeTx {
     encoder: fountain::Encoder,
     layout: vcode::Layout,
+    bpc: u8,
 }
 
 /// フレーム画像 (グレースケール、1 セル = 1 ピクセル)
@@ -25,17 +26,20 @@ pub struct VcodeFrameImage {
 
 impl VcodeTx {
     /// payload を vcode 用に符号化する。extra_repair はリペアパケット追加数。
-    /// grid_w x grid_h はブロック格子 (5x4=標準, 7x6=高密度)。packet_size は 44 バイト固定。
+    /// grid_w x grid_h はブロック格子 (5x4=標準, 7x6=高密度)。
+    /// bits_per_cell: 1=白黒 (packet 44B), 2=輝度4値 (packet 94B)。
     #[flutter_rust_bridge::frb(sync)]
-    pub fn new(payload: Vec<u8>, extra_repair: u32, grid_w: u8, grid_h: u8) -> VcodeTx {
+    pub fn new(payload: Vec<u8>, extra_repair: u32, grid_w: u8, grid_h: u8, bits_per_cell: u8) -> VcodeTx {
+        let bpc = if bits_per_cell == 2 { 2 } else { 1 };
         let layout = vcode::Layout {
             block: 20,
             grid_w: grid_w.clamp(2, 12) as usize,
             grid_h: grid_h.clamp(2, 12) as usize,
         };
         VcodeTx {
-            encoder: fountain::Encoder::new(&payload, layout.packet_size() as u16, extra_repair),
+            encoder: fountain::Encoder::new(&payload, layout.packet_size(bpc) as u16, extra_repair),
             layout,
+            bpc,
         }
     }
 
@@ -58,7 +62,7 @@ impl VcodeTx {
         let pc = self.encoder.packet_count();
         let header = vcode::FrameHeader {
             version: vcode::VERSION,
-            bits_per_cell: 1,
+            bits_per_cell: self.bpc,
             layout: self.layout,
             frame_seq: (i % 0x10000) as u16,
             oti: {
@@ -67,8 +71,15 @@ impl VcodeTx {
                 oti
             },
         };
+        // raptorq がシンボルサイズを丸めるため、シリアライズ済みパケットが
+        // ペイロード長より短いことがある → ゼロパディング (受信側は OTI 長で切り出す)
+        let payload_len = self.layout.block_payload_len(self.bpc);
         let blocks: Vec<Vec<u8>> = (0..bc)
-            .map(|j| self.encoder.packet((i as usize * bc + j) % pc))
+            .map(|j| {
+                let mut p = self.encoder.packet((i as usize * bc + j) % pc);
+                p.resize(payload_len, 0);
+                p
+            })
             .collect();
         let bm = vcode::encode_frame(&header, &blocks, 1);
         VcodeFrameImage {
@@ -115,7 +126,18 @@ fn fail(reason: &str) -> VcodeScanReport {
 
 fn success(result: beyond_qr_vcode::scan::ScanResult, tracked: bool, layout: vcode::Layout) -> VcodeScanReport {
     let frame = result.frame;
-    let packets: Vec<Vec<u8>> = frame.blocks.into_iter().flatten().collect();
+    // ブロックペイロードはゼロパディングされていることがあるため、
+    // OTI のシンボルサイズから実パケット長 (4 + symbol_size) に切り出す
+    let pkt_len = 4 + fountain::oti_symbol_size(&frame.header.oti) as usize;
+    let packets: Vec<Vec<u8>> = frame
+        .blocks
+        .into_iter()
+        .flatten()
+        .map(|mut p| {
+            p.truncate(pkt_len.min(p.len()));
+            p
+        })
+        .collect();
     VcodeScanReport {
         detected: true,
         tracked,

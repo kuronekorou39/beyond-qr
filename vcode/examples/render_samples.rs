@@ -52,7 +52,7 @@ fn main() {
         frame_seq: 0,
         oti: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
     };
-    let blocks = random_blocks(layout.block_count(), layout.block_payload_len());
+    let blocks = random_blocks(layout.block_count(), layout.block_payload_len(1));
 
     // 1. 通常フレーム
     let clean = encode_frame(&header, &blocks, SCALE);

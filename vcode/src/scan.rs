@@ -340,16 +340,18 @@ fn descend(
     best_h
 }
 
-/// hm でサンプリングした全セル値から Otsu 閾値を求める
+/// 構造セル (上下ストリップ = コーナー/ヘッダ/較正) のサンプル値から Otsu 閾値を求める。
+/// データ領域は輝度多値 (2bit) の場合に中間グレーを含むため、二値化閾値の推定には使わない。
 fn threshold_for(img: &GrayImage, hm: &Homography, layout: Layout) -> u8 {
     let (w, h) = (layout.width(), layout.height());
-    let mut values = vec![0u8; w * h];
-    for r in 0..h {
-        for c in 0..w {
+    let rows = (0..STRIP_H).chain(h - STRIP_H..h);
+    let values: Vec<u8> = rows
+        .flat_map(|r| (0..w).map(move |c| (r, c)))
+        .map(|(r, c)| {
             let (x, y) = hm.map(c as f32 + 0.5, r as f32 + 0.5);
-            values[r * w + c] = img.bilinear(x, y).round().clamp(0.0, 255.0) as u8;
-        }
-    }
+            img.bilinear(x, y).round().clamp(0.0, 255.0) as u8
+        })
+        .collect();
     otsu(values.iter().copied())
 }
 
@@ -410,11 +412,12 @@ fn decode_at(
     let (w, h) = (layout.width(), layout.height());
     let thr = threshold_for(img, &hmat, layout) as f32;
 
-    // セル (row+dy, col+dx) を実数座標でサンプリング (dx, dy はサブセルオフセット)
-    let sample = |r: usize, c: usize, dx: f32, dy: f32| -> bool {
+    // セル (row+dy, col+dx) の生グレー値 / 二値 (dx, dy はサブセルオフセット)
+    let sample_raw = |r: usize, c: usize, dx: f32, dy: f32| -> f32 {
         let (x, y) = hmat.map(c as f32 + 0.5 + dx, r as f32 + 0.5 + dy);
-        img.bilinear(x, y) < thr
+        img.bilinear(x, y)
     };
+    let sample = |r: usize, c: usize, dx: f32, dy: f32| -> bool { sample_raw(r, c, dx, dy) < thr };
 
     // 四隅マーカーの照合 (オフセットなし)
     let mut matched = 0usize;
@@ -454,20 +457,94 @@ fn decode_at(
             })
         })
         .ok_or(FrameError::HeaderNotFound)?;
-    if header.layout != layout || header.bits_per_cell != 1 {
+    let bpc = header.bits_per_cell;
+    if header.layout != layout || !(bpc == 1 || bpc == 2) {
         return Err(FrameError::LayoutMismatch);
     }
+
+    // 輝度 4 値 (bpc=2) 用の局所較正: 上端タイミング行と下ストリップの既知白黒セルから
+    // 列ごとの黒/白レベルを推定し、データセルは上下の推定値を行位置で線形補間して正規化する。
+    // 照明勾配・ガンマ・露出の空間変化を吸収する (Phase 0 の較正の教訓)。
+    let calib = if bpc == 2 {
+        let estimate = |rows: &[usize]| -> (Vec<f32>, Vec<f32>) {
+            let mut blk: Vec<Vec<f32>> = vec![Vec::new(); w];
+            let mut wht: Vec<Vec<f32>> = vec![Vec::new(); w];
+            for &r in rows {
+                for c in CORNER..w - CORNER {
+                    let v = sample_raw(r, c, 0.0, 0.0);
+                    if crate::calib_black(r, c) {
+                        blk[c].push(v);
+                    } else {
+                        wht[c].push(v);
+                    }
+                }
+            }
+            let smooth = |acc: &[Vec<f32>]| -> Vec<f32> {
+                (0..w)
+                    .map(|c| {
+                        let cc = c.clamp(CORNER, w - CORNER - 1);
+                        for win in [6usize, 16, w] {
+                            let lo = cc.saturating_sub(win).max(CORNER);
+                            let hi = (cc + win + 1).min(w - CORNER);
+                            let (mut sum, mut n) = (0.0f32, 0u32);
+                            for k in lo..hi {
+                                for &v in &acc[k] {
+                                    sum += v;
+                                    n += 1;
+                                }
+                            }
+                            if n > 0 {
+                                return sum / n as f32;
+                            }
+                        }
+                        0.0
+                    })
+                    .collect()
+            };
+            (smooth(&blk), smooth(&wht))
+        };
+        let (black_top, white_top) = estimate(&[0]);
+        let bot_rows: Vec<usize> = (h - STRIP_H..h).collect();
+        let (black_bot, white_bot) = estimate(&bot_rows);
+        Some((black_top, white_top, black_bot, white_bot))
+    } else {
+        None
+    };
+
+    // 正規化した輝度からレベル (0..4) を判定
+    let quantize = |r: usize, c: usize, dx: f32, dy: f32| -> u8 {
+        let (black_top, white_top, black_bot, white_bot) = calib.as_ref().unwrap();
+        let v = sample_raw(r, c, dx, dy);
+        let t = r as f32 / (h - 1) as f32;
+        let black = black_top[c] * (1.0 - t) + black_bot[c] * t;
+        let white = white_top[c] * (1.0 - t) + white_bot[c] * t;
+        let norm = (v - black) / (white - black).max(1.0);
+        match norm {
+            x if x < 1.0 / 6.0 => 0,
+            x if x < 0.5 => 1,
+            x if x < 5.0 / 6.0 => 2,
+            _ => 3,
+        }
+    };
 
     // ブロック: 同様にオフセットリトライ付きで CRC が通ったものだけ回収
     let blocks = (0..layout.block_count())
         .map(|bi| {
             let (or, oc) = layout.block_origin(bi);
             offs.iter().find_map(|&(dx, dy)| {
-                let bits: Vec<bool> = (0..layout.block * layout.block)
-                    .map(|i| sample(or + i / layout.block, oc + i % layout.block, dx, dy))
-                    .collect();
+                let mut bits = Vec::with_capacity(layout.block * layout.block * bpc as usize);
+                for i in 0..layout.block * layout.block {
+                    let (r, c) = (or + i / layout.block, oc + i % layout.block);
+                    if bpc == 1 {
+                        bits.push(sample(r, c, dx, dy));
+                    } else {
+                        let level = quantize(r, c, dx, dy);
+                        bits.push(level & 2 != 0);
+                        bits.push(level & 1 != 0);
+                    }
+                }
                 let bytes = bits_to_bytes(&bits);
-                let (payload, crc) = bytes.split_at(layout.block_payload_len());
+                let (payload, crc) = bytes.split_at(layout.block_payload_len(bpc));
                 if crate::crc16(payload) == u16::from_be_bytes([crc[0], crc[1]]) {
                     Some(payload.to_vec())
                 } else {

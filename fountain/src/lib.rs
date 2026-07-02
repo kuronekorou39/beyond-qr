@@ -18,6 +18,13 @@ use raptorq::{Decoder as RqDecoder, Encoder as RqEncoder, EncodingPacket, Object
 
 pub const DEFAULT_PACKET_SIZE: u16 = 500;
 
+/// OTI からシンボルサイズを取り出す。
+/// raptorq は指定 packet_size を 8 の倍数などに丸めるため、実際のシリアライズ済み
+/// パケット長 (= 4 + symbol_size) はこの値から求めること。
+pub fn oti_symbol_size(oti_bytes: &[u8; 12]) -> u16 {
+    ObjectTransmissionInformation::deserialize(oti_bytes).symbol_size()
+}
+
 pub struct Encoder {
     oti: ObjectTransmissionInformation,
     /// 事前生成した K source + N repair = packets.len() のパケット列。

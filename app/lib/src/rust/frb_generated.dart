@@ -146,6 +146,7 @@ abstract class RustLibApi extends BaseApi {
     required int extraRepair,
     required int gridW,
     required int gridH,
+    required int bitsPerCell,
   });
 
   int crateApiVcodeVcodeTxPacketCount({required VcodeTx that});
@@ -637,6 +638,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required int extraRepair,
     required int gridW,
     required int gridH,
+    required int bitsPerCell,
   }) {
     return handler.executeSync(
       SyncTask(
@@ -646,6 +648,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_u_32(extraRepair, serializer);
           sse_encode_u_8(gridW, serializer);
           sse_encode_u_8(gridH, serializer);
+          sse_encode_u_8(bitsPerCell, serializer);
           return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 14)!;
         },
         codec: SseCodec(
@@ -654,7 +657,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: null,
         ),
         constMeta: kCrateApiVcodeVcodeTxNewConstMeta,
-        argValues: [payload, extraRepair, gridW, gridH],
+        argValues: [payload, extraRepair, gridW, gridH, bitsPerCell],
         apiImpl: this,
       ),
     );
@@ -662,7 +665,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   TaskConstMeta get kCrateApiVcodeVcodeTxNewConstMeta => const TaskConstMeta(
     debugName: "VcodeTx_new",
-    argNames: ["payload", "extraRepair", "gridW", "gridH"],
+    argNames: ["payload", "extraRepair", "gridW", "gridH", "bitsPerCell"],
   );
 
   @override

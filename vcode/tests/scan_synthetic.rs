@@ -13,22 +13,26 @@ impl Lcg {
     }
 }
 
-fn test_frame(layout: Layout, seed: u8) -> (FrameHeader, Vec<Vec<u8>>) {
+fn test_frame_bpc(layout: Layout, seed: u8, bpc: u8) -> (FrameHeader, Vec<Vec<u8>>) {
     let header = FrameHeader {
         version: VERSION,
-        bits_per_cell: 1,
+        bits_per_cell: bpc,
         layout,
         frame_seq: 42,
         oti: [9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 1, 2],
     };
     let blocks = (0..layout.block_count())
         .map(|bi| {
-            (0..layout.block_payload_len())
+            (0..layout.block_payload_len(bpc))
                 .map(|i| (i as u8).wrapping_mul(17).wrapping_add(bi as u8 ^ seed))
                 .collect()
         })
         .collect();
     (header, blocks)
+}
+
+fn test_frame(layout: Layout, seed: u8) -> (FrameHeader, Vec<Vec<u8>>) {
+    test_frame_bpc(layout, seed, 1)
 }
 
 /// レンダリング済みフレームを、指定した 4 隅へ射影変換して canvas に描き込む。
@@ -148,6 +152,40 @@ fn scan_dense_layout_at_1080p_cell_resolution() {
     assert_eq!(result.frame.header, header);
     let ok = result.frame.blocks.iter().filter(|b| b.is_some()).count();
     assert!(ok >= 39, "高密度の回収ブロックが少なすぎる: {ok}/42");
+}
+
+#[test]
+fn scan_2bpc_with_gain_gradient() {
+    // 輝度 4 値 (2bit/セル)。横方向の輝度勾配 (gain 0.75→0.95) 下でも
+    // ストリップ由来の局所較正で正しく量子化できることを検証する。
+    let layout = Layout::V0;
+    let (header, blocks) = test_frame_bpc(layout, 0xB2, 2);
+    let frame_px = encode_frame(&header, &blocks, 8);
+
+    let dst = [
+        (180.0f32, 130.0),
+        (1010.0, 155.0),
+        (985.0, 950.0),
+        (205.0, 920.0),
+    ];
+    let canvas = synth_camera_image(&frame_px, 1280, 1080, &dst, 0x4B4B);
+    let img = GrayImage { w: 1280, h: 1080, data: &canvas };
+    let guide = Quad {
+        tl: (dst[0].0 - 15.0, dst[0].1 + 12.0),
+        tr: (dst[1].0 + 14.0, dst[1].1 - 10.0),
+        br: (dst[2].0 + 11.0, dst[2].1 + 13.0),
+        bl: (dst[3].0 - 10.0, dst[3].1 - 14.0),
+    };
+
+    let result = scan_frame(&img, &guide, layout).expect("2bpc スキャン失敗");
+    assert_eq!(result.frame.header, header);
+    let ok = result.frame.blocks.iter().filter(|b| b.is_some()).count();
+    assert!(ok >= 17, "2bpc の回収ブロックが少なすぎる: {ok}/20");
+    for (i, b) in result.frame.blocks.iter().enumerate() {
+        if let Some(payload) = b {
+            assert_eq!(payload, &blocks[i], "block {i} の内容不一致");
+        }
+    }
 }
 
 #[test]

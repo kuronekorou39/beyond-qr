@@ -25,9 +25,10 @@ class _VcodeSendScreenState extends State<VcodeSendScreen> {
   String? _pickedName;
   int _pickedSize = 0;
 
-  int _fps = 20; // 実測: カメラ30fpsに対し 20fps+追従が最適 (2026-07-02)
+  int _fps = 15; // 実測: 2bit はクリーンキャプチャ保証が効く 15fps が最適 (1bit なら 20fps)
   double _repairRate = 0.5; // リペアパケット比率 (source 比)
-  String _grid = '7x6'; // ブロック格子 (7x6=高密度 1848B/フレーム, 5x4=標準 880B)
+  String _grid = '7x6'; // ブロック格子 (7x6=高密度, 5x4=標準)
+  int _bpc = 2; // 1=白黒, 2=輝度4値 (容量2倍)
 
   bool _running = false;
   int _seq = 0;
@@ -88,13 +89,15 @@ class _VcodeSendScreenState extends State<VcodeSendScreen> {
       setState(() => _status = 'ペイロードが空です');
       return;
     }
-    final sourcePackets = (payload.length / 44).ceil();
+    final packetSize = _bpc == 2 ? 94 : 44;
+    final sourcePackets = (payload.length / packetSize).ceil();
     final gridParts = _grid.split('x');
     final tx = VcodeTx(
         payload: payload,
         extraRepair: (sourcePackets * _repairRate).ceil(),
         gridW: int.parse(gridParts[0]),
-        gridH: int.parse(gridParts[1]));
+        gridH: int.parse(gridParts[1]),
+        bitsPerCell: _bpc);
     final seq = ++_seq;
     setState(() {
       _tx = tx;
@@ -113,7 +116,7 @@ class _VcodeSendScreenState extends State<VcodeSendScreen> {
         _pickedName == null ? 'text/plain;charset=utf-8' : 'application/octet-stream',
         payload.length,
         'vcode $_grid',
-        '${_fps}fps'));
+        '${_fps}fps/${_bpc}bit'));
     await WakelockPlus.enable();
     try {
       await ScreenBrightness().setScreenBrightness(1.0);
@@ -246,6 +249,21 @@ class _VcodeSendScreenState extends State<VcodeSendScreen> {
               ],
               selected: {_grid},
               onSelectionChanged: (s) => setState(() => _grid = s.first),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            const Text('階調'),
+            const SizedBox(width: 12),
+            SegmentedButton<int>(
+              segments: const [
+                ButtonSegment(value: 1, label: Text('白黒 1bit')),
+                ButtonSegment(value: 2, label: Text('4値 2bit')),
+              ],
+              selected: {_bpc},
+              onSelectionChanged: (s) => setState(() => _bpc = s.first),
             ),
           ],
         ),

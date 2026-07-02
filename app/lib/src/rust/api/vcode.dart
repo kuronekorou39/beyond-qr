@@ -36,17 +36,20 @@ abstract class VcodeTx implements RustOpaqueInterface {
   VcodeFrameImage frameGray({required int i});
 
   /// payload を vcode 用に符号化する。extra_repair はリペアパケット追加数。
-  /// grid_w x grid_h はブロック格子 (5x4=標準, 7x6=高密度)。packet_size は 44 バイト固定。
+  /// grid_w x grid_h はブロック格子 (5x4=標準, 7x6=高密度)。
+  /// bits_per_cell: 1=白黒 (packet 44B), 2=輝度4値 (packet 94B)。
   factory VcodeTx({
     required List<int> payload,
     required int extraRepair,
     required int gridW,
     required int gridH,
+    required int bitsPerCell,
   }) => RustLib.instance.api.crateApiVcodeVcodeTxNew(
     payload: payload,
     extraRepair: extraRepair,
     gridW: gridW,
     gridH: gridH,
+    bitsPerCell: bitsPerCell,
   );
 
   int packetCount();

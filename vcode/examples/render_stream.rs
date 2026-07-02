@@ -29,6 +29,8 @@ fn main() {
         .unwrap_or(20_000);
     let grid_w: usize = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(5);
     let grid_h: usize = std::env::args().nth(3).and_then(|s| s.parse().ok()).unwrap_or(4);
+    let bpc: u8 = std::env::args().nth(4).and_then(|s| s.parse().ok()).unwrap_or(1);
+    assert!(bpc == 1 || bpc == 2, "bpc は 1 か 2");
 
     // 決定的だが圧縮しにくいペイロード (実データ相当)
     let payload: Vec<u8> = {
@@ -42,8 +44,8 @@ fn main() {
     };
 
     let layout = Layout { block: 20, grid_w, grid_h };
-    let source_packets = payload_len.div_ceil(layout.packet_size());
-    let encoder = Encoder::new(&payload, layout.packet_size() as u16, (source_packets / 2) as u32);
+    let source_packets = payload_len.div_ceil(layout.packet_size(bpc));
+    let encoder = Encoder::new(&payload, layout.packet_size(bpc) as u16, (source_packets / 2) as u32);
     let bc = layout.block_count();
     let pc = encoder.packet_count();
     let n_frames = pc.div_ceil(bc);
@@ -57,13 +59,21 @@ fn main() {
     for f in 0..n_frames {
         let header = FrameHeader {
             version: VERSION,
-            bits_per_cell: 1,
+            bits_per_cell: bpc,
             layout,
             frame_seq: f as u16,
             oti,
         };
-        // アプリの VcodeTx と同じ循環割り当て (全フレーム満杯)
-        let blocks: Vec<Vec<u8>> = (0..bc).map(|j| encoder.packet((f * bc + j) % pc)).collect();
+        // アプリの VcodeTx と同じ循環割り当て (全フレーム満杯)。
+        // raptorq のシンボル丸めでパケットが短い場合はゼロパディング。
+        let payload_len = layout.block_payload_len(bpc);
+        let blocks: Vec<Vec<u8>> = (0..bc)
+            .map(|j| {
+                let mut p = encoder.packet((f * bc + j) % pc);
+                p.resize(payload_len, 0);
+                p
+            })
+            .collect();
         let bm = encode_frame(&header, &blocks, SCALE);
         save_png(&bm, &out_dir.join(format!("tx_{f:03}.png")));
     }

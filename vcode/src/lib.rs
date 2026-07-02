@@ -77,20 +77,20 @@ impl Layout {
         self.grid_w * self.grid_h
     }
 
-    /// 1 ブロックのセル数から得られる総バイト数 (1 bit/セル)
-    pub fn block_bytes(&self) -> usize {
-        self.block * self.block / 8
+    /// 1 ブロックのセル数から得られる総バイト数 (bpc = bits/セル、1 or 2)
+    pub fn block_bytes(&self, bpc: u8) -> usize {
+        self.block * self.block * bpc as usize / 8
     }
 
     /// CRC-16 を除いたブロックペイロード長 (= シリアライズ済み RaptorQ パケットがそのまま入る)
-    pub fn block_payload_len(&self) -> usize {
-        self.block_bytes() - 2
+    pub fn block_payload_len(&self, bpc: u8) -> usize {
+        self.block_bytes(bpc) - 2
     }
 
     /// このレイアウトに合わせる場合の RaptorQ packet_size
     /// (シリアライズ済みパケット = 4 byte payload ID + packet_size)
-    pub fn packet_size(&self) -> usize {
-        self.block_payload_len() - 4
+    pub fn packet_size(&self, bpc: u8) -> usize {
+        self.block_payload_len(bpc) - 4
     }
 
     /// ブロック bi (行優先) の左上セル座標 (row, col)
@@ -174,7 +174,11 @@ impl Bitmap {
 
     /// セル (row, col) を scale x scale ピクセルで塗る
     fn fill_cell(&mut self, scale: usize, row: usize, col: usize, black: bool) {
-        let v = if black { 0 } else { 255 };
+        self.fill_cell_gray(scale, row, col, if black { 0 } else { 255 });
+    }
+
+    /// セル (row, col) を任意のグレー値で塗る (輝度多値用)
+    fn fill_cell_gray(&mut self, scale: usize, row: usize, col: usize, v: u8) {
         for dy in 0..scale {
             for dx in 0..scale {
                 self.set(col * scale + dx, row * scale + dy, v);
@@ -184,7 +188,12 @@ impl Bitmap {
 
     /// セル (row, col) の中心をサンプリングして黒なら true
     fn sample_cell(&self, scale: usize, row: usize, col: usize) -> bool {
-        self.get(col * scale + scale / 2, row * scale + scale / 2) < 128
+        self.sample_cell_value(scale, row, col) < 128
+    }
+
+    /// セル (row, col) の中心のグレー値
+    fn sample_cell_value(&self, scale: usize, row: usize, col: usize) -> u8 {
+        self.get(col * scale + scale / 2, row * scale + scale / 2)
     }
 }
 
@@ -266,6 +275,21 @@ fn byte_bits(bytes: &[u8]) -> impl Iterator<Item = bool> + '_ {
         .flat_map(|&b| (0..8).map(move |j| (b >> (7 - j)) & 1 == 1))
 }
 
+/// 輝度レベル (0..4) → グレー値。レベル 0 = 黒、3 = 白。
+pub(crate) fn level_gray(level: u8) -> u8 {
+    [0u8, 85, 170, 255][level as usize & 3]
+}
+
+/// グレー値 → 最近傍の輝度レベル (理想チャネル用。実カメラは局所較正で正規化してから判定)
+pub(crate) fn nearest_level(v: u8) -> u8 {
+    match v {
+        0..=42 => 0,
+        43..=127 => 1,
+        128..=212 => 2,
+        _ => 3,
+    }
+}
+
 /// ビット列 (MSB-first) をバイト列に戻す
 pub(crate) fn bits_to_bytes(bits: &[bool]) -> Vec<u8> {
     bits.chunks(8)
@@ -274,7 +298,7 @@ pub(crate) fn bits_to_bytes(bits: &[bool]) -> Vec<u8> {
 }
 
 /// フレームを 1 枚エンコードする。
-/// blocks は各ブロックのペイロード (長さ layout.block_payload_len())。
+/// blocks は各ブロックのペイロード (長さ layout.block_payload_len(1))。
 /// block_count() より少ない場合、余りは全ゼロセル (CRC 不成立 = 受信側で None) で埋める。
 pub fn encode_frame(header: &FrameHeader, blocks: &[Vec<u8>], scale: usize) -> Bitmap {
     let layout = header.layout;
@@ -319,19 +343,31 @@ pub fn encode_frame(header: &FrameHeader, blocks: &[Vec<u8>], scale: usize) -> B
         }
     }
 
-    // データブロック: payload + CRC-16 を行優先ビットで敷き詰める
+    // データブロック: payload + CRC-16 を行優先で敷き詰める。
+    // bpc=1: 1 セル 1 ビット (白黒)。bpc=2: 1 セル 2 ビット (輝度 4 値、MSB-first)。
+    // 構造セル (コーナー/ヘッダ/較正) は bpc に関わらず白黒のまま。
+    let bpc = header.bits_per_cell;
+    assert!(bpc == 1 || bpc == 2, "bits_per_cell は 1 か 2");
     for bi in 0..layout.block_count() {
         let content: Vec<u8> = if bi < blocks.len() {
-            assert_eq!(blocks[bi].len(), layout.block_payload_len(), "ペイロード長不一致");
+            assert_eq!(blocks[bi].len(), layout.block_payload_len(bpc), "ペイロード長不一致");
             let mut v = blocks[bi].clone();
             v.extend_from_slice(&crc16(&blocks[bi]).to_be_bytes());
             v
         } else {
-            vec![0u8; layout.block_bytes()]
+            vec![0u8; layout.block_bytes(bpc)]
         };
         let (or, oc) = layout.block_origin(bi);
-        for (i, bit) in byte_bits(&content).enumerate() {
-            bm.fill_cell(scale, or + i / layout.block, oc + i % layout.block, bit);
+        let bits: Vec<bool> = byte_bits(&content).collect();
+        for i in 0..layout.block * layout.block {
+            let (r, c) = (or + i / layout.block, oc + i % layout.block);
+            if bpc == 1 {
+                bm.fill_cell(scale, r, c, bits[i]);
+            } else {
+                // 規約: bit ペア (b0,b1) MSB-first → level = b0*2+b1 → グレー値 level_gray(level)
+                let level = (bits[i * 2] as u8) << 1 | bits[i * 2 + 1] as u8;
+                bm.fill_cell_gray(scale, r, c, level_gray(level));
+            }
         }
     }
 
@@ -349,19 +385,21 @@ pub fn decode_frame(bm: &Bitmap, scale: usize) -> Result<DecodedFrame, FrameErro
         return Err(FrameError::BadDimensions);
     }
     let (w, h) = (bm.w / scale, bm.h / scale);
-    decode_from_sampler(&|r, c| bm.sample_cell(scale, r, c), w, h)
+    decode_from_sampler(&|r, c| bm.sample_cell_value(scale, r, c), w, h)
 }
 
-/// セル (row, col) → 黒 のサンプラーからフレームをデコードする共通経路。
-/// 理想ビットマップ (decode_frame) と実画像スキャン (scan::scan_frame) が共用する。
+/// セル (row, col) → グレー値 のサンプラーからフレームをデコードする共通経路 (理想チャネル用)。
+/// 構造セルは 128 閾値の白黒、データブロックはヘッダの bits_per_cell に応じて
+/// 白黒 (1bit) または最近傍 4 値 (2bit) で読む。
 pub(crate) fn decode_from_sampler(
-    sample: &dyn Fn(usize, usize) -> bool,
+    sample: &dyn Fn(usize, usize) -> u8,
     w: usize,
     h: usize,
 ) -> Result<DecodedFrame, FrameError> {
     if w < 2 * CORNER + 1 || h < 2 * STRIP_H + 1 {
         return Err(FrameError::BadDimensions);
     }
+    let black = |r: usize, c: usize| sample(r, c) < 128;
 
     // 四隅マーカー検証 (一致率で判定)
     let mut matched = 0usize;
@@ -369,7 +407,7 @@ pub(crate) fn decode_from_sampler(
     for (which, or, oc) in corner_origins(w, h) {
         for r in 0..CORNER {
             for c in 0..CORNER {
-                if sample(or + r, oc + c) == corner_black(which, r, c) {
+                if black(or + r, oc + c) == corner_black(which, r, c) {
                     matched += 1;
                 }
             }
@@ -380,7 +418,7 @@ pub(crate) fn decode_from_sampler(
     }
 
     // ヘッダ: 各コピーを順に試し、最初に CRC が通ったものを採用
-    let hdr_cell_bits: Vec<bool> = header_cells(w).map(|(r, c)| sample(r, c)).collect();
+    let hdr_cell_bits: Vec<bool> = header_cells(w).map(|(r, c)| black(r, c)).collect();
     let copy_bits = HEADER_LEN * 8;
     let header = (0..hdr_cell_bits.len() / copy_bits)
         .find_map(|k| {
@@ -390,7 +428,8 @@ pub(crate) fn decode_from_sampler(
         .ok_or(FrameError::HeaderNotFound)?;
 
     let layout = header.layout;
-    if layout.width() != w || layout.height() != h || header.bits_per_cell != 1 {
+    let bpc = header.bits_per_cell;
+    if layout.width() != w || layout.height() != h || !(bpc == 1 || bpc == 2) {
         return Err(FrameError::LayoutMismatch);
     }
 
@@ -398,11 +437,19 @@ pub(crate) fn decode_from_sampler(
     let blocks = (0..layout.block_count())
         .map(|bi| {
             let (or, oc) = layout.block_origin(bi);
-            let bits: Vec<bool> = (0..layout.block * layout.block)
-                .map(|i| sample(or + i / layout.block, oc + i % layout.block))
-                .collect();
+            let mut bits = Vec::with_capacity(layout.block * layout.block * bpc as usize);
+            for i in 0..layout.block * layout.block {
+                let (r, c) = (or + i / layout.block, oc + i % layout.block);
+                if bpc == 1 {
+                    bits.push(black(r, c));
+                } else {
+                    let level = nearest_level(sample(r, c));
+                    bits.push(level & 2 != 0);
+                    bits.push(level & 1 != 0);
+                }
+            }
             let bytes = bits_to_bytes(&bits);
-            let (payload, crc) = bytes.split_at(layout.block_payload_len());
+            let (payload, crc) = bytes.split_at(layout.block_payload_len(bpc));
             if crc16(payload) == u16::from_be_bytes([crc[0], crc[1]]) {
                 Some(payload.to_vec())
             } else {
@@ -461,9 +508,9 @@ mod tests {
         let l = Layout::V0;
         assert_eq!((l.width(), l.height()), (100, 92));
         assert_eq!(l.block_count(), 20);
-        assert_eq!(l.block_bytes(), 50);
-        assert_eq!(l.block_payload_len(), 48);
-        assert_eq!(l.packet_size(), 44);
+        assert_eq!(l.block_bytes(1), 50);
+        assert_eq!(l.block_payload_len(1), 48);
+        assert_eq!(l.packet_size(1), 44);
         // ヘッダ領域 = 5 * (100-12) = 440 セル → 22byte*8=176bit が 2 コピー (+88 セル余り)
         assert_eq!(header_cells(l.width()).count(), 440);
     }
@@ -471,7 +518,7 @@ mod tests {
     #[test]
     fn frame_roundtrip_scale1() {
         let header = test_header(7);
-        let blocks = test_blocks(20, Layout::V0.block_payload_len(), 0xA5);
+        let blocks = test_blocks(20, Layout::V0.block_payload_len(1), 0xA5);
         let bm = encode_frame(&header, &blocks, 1);
         let decoded = decode_frame(&bm, 1).unwrap();
         assert_eq!(decoded.header, header);
@@ -481,9 +528,28 @@ mod tests {
     }
 
     #[test]
+    fn frame_roundtrip_2bpc() {
+        // 輝度 4 値 (2bit/セル): ブロック容量が 2 倍 (payload 98B, packet 94B) になる
+        let l = Layout::V0;
+        assert_eq!(l.block_bytes(2), 100);
+        assert_eq!(l.block_payload_len(2), 98);
+        assert_eq!(l.packet_size(2), 94);
+
+        let mut header = test_header(12);
+        header.bits_per_cell = 2;
+        let blocks = test_blocks(20, l.block_payload_len(2), 0xE7);
+        let bm = encode_frame(&header, &blocks, 2);
+        let decoded = decode_frame(&bm, 2).unwrap();
+        assert_eq!(decoded.header, header);
+        for (i, b) in decoded.blocks.iter().enumerate() {
+            assert_eq!(b.as_deref(), Some(blocks[i].as_slice()), "block {i}");
+        }
+    }
+
+    #[test]
     fn frame_roundtrip_scale3() {
         let header = test_header(8);
-        let blocks = test_blocks(20, Layout::V0.block_payload_len(), 0x5A);
+        let blocks = test_blocks(20, Layout::V0.block_payload_len(1), 0x5A);
         let bm = encode_frame(&header, &blocks, 3);
         assert_eq!((bm.w, bm.h), (300, 276));
         let decoded = decode_frame(&bm, 3).unwrap();
@@ -497,7 +563,7 @@ mod tests {
     fn filler_blocks_decode_as_none() {
         let header = test_header(9);
         // 20 ブロック中 5 個だけ実データ
-        let blocks = test_blocks(5, Layout::V0.block_payload_len(), 0x11);
+        let blocks = test_blocks(5, Layout::V0.block_payload_len(1), 0x11);
         let bm = encode_frame(&header, &blocks, 1);
         let decoded = decode_frame(&bm, 1).unwrap();
         for i in 0..5 {
@@ -511,7 +577,7 @@ mod tests {
     #[test]
     fn partial_corruption_recovers_intact_blocks() {
         let header = test_header(10);
-        let blocks = test_blocks(20, Layout::V0.block_payload_len(), 0x77);
+        let blocks = test_blocks(20, Layout::V0.block_payload_len(1), 0x77);
         let mut bm = encode_frame(&header, &blocks, 1);
 
         // ブロック格子 (bx,by) = (1..3, 1..3) の 4 ブロックを覆う黒塗り
@@ -541,7 +607,7 @@ mod tests {
     #[test]
     fn corner_corruption_is_detected() {
         let header = test_header(11);
-        let blocks = test_blocks(20, Layout::V0.block_payload_len(), 0x33);
+        let blocks = test_blocks(20, Layout::V0.block_payload_len(1), 0x33);
         let mut bm = encode_frame(&header, &blocks, 1);
         // TL マーカー全体を白塗り (一致率 85% を下回る)
         for y in 0..CORNER {
