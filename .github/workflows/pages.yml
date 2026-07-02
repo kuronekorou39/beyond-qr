@@ -42,8 +42,6 @@ jobs:
         run: wasm-pack build --target web --release --out-dir ../web/pwa/pkg
 
       - uses: actions/configure-pages@v5
-        with:
-          enablement: true
 
       - uses: actions/upload-pages-artifact@v3
         with:
