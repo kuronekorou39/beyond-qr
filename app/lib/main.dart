@@ -1,4 +1,7 @@
+import 'dart:io' show Platform;
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'src/rust/frb_generated.dart';
 import 'history_store.dart';
 import 'send_screen.dart';
@@ -9,6 +12,10 @@ import 'vcode_receive_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // 縦向き固定: QR/vcode の受信はカメラ向きを前提に検出するため、端末回転で
+  // 前提が崩れて読めなくなるのを防ぐ (スキャナ系アプリの定石)。
+  await SystemChrome.setPreferredOrientations(
+      [DeviceOrientation.portraitUp, DeviceOrientation.portraitDown]);
   await RustLib.init();
   await HistoryStore.instance.init();
   runApp(const BeyondQrApp());
@@ -41,12 +48,20 @@ class HomeShell extends StatefulWidget {
 class _HomeShellState extends State<HomeShell> {
   int _index = 0;
 
-  static const _screens = [
-    SendScreen(),
-    ReceiveScreen(),
-    VcodeSendScreen(),
-    VcodeReceiveScreen(),
-    HistoryScreen(),
+  /// カメラ受信はモバイルのみ。デスクトップ (Windows = PC 送信機として使用) では
+  /// mobile_scanner / camera が動かないため差し替える (IndexedStack は全子を即ビルドする)。
+  static final bool _hasCamera = Platform.isAndroid || Platform.isIOS;
+
+  static final _screens = <Widget>[
+    const SendScreen(),
+    _hasCamera
+        ? const ReceiveScreen()
+        : const Center(child: Text('この環境ではカメラ受信は使えません')),
+    const VcodeSendScreen(),
+    _hasCamera
+        ? const VcodeReceiveScreen()
+        : const Center(child: Text('この環境ではカメラ受信は使えません')),
+    const HistoryScreen(),
   ];
 
   @override
