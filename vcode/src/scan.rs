@@ -174,10 +174,12 @@ fn otsu(values: impl Iterator<Item = u8>) -> u8 {
 //  ブラウザ UI や周辺テキストなどのクラッタを誤認して廃止。
 //  現在はガイド枠を初期値に、既知セル一致スコアの粗→細探索で直接合わせる。)
 
-/// スキャン結果 (デコード結果 + 推定ホモグラフィ。トラッキングで次フレームのガイドに使う)
+/// スキャン結果 (デコード結果 + 推定ホモグラフィ)
 pub struct ScanResult {
     pub frame: DecodedFrame,
     pub homography: Homography,
+    /// 精密化後の 4 隅 (画像座標、tl→tr→br→bl)。次フレームのトラッキング初期値に使う。
+    pub corners: [(f32, f32); 4],
 }
 
 /// コーナーマーカーのセル一覧 (構造が低周波で、粗い位置合わせのスコアに向く)
@@ -222,7 +224,6 @@ fn refine_homography(
 ) -> Option<Homography> {
     let (wc, hc) = (layout.width() as f32, layout.height() as f32);
     let src = [(0.0, 0.0), (wc, 0.0), (wc, hc), (0.0, hc)];
-    let fine = known_cells(layout);
 
     // コーナーごとのマーカーセル (quad 順 tl, tr, br, bl に並べ替え)
     let per_corner: Vec<Vec<(usize, usize, bool)>> = {
@@ -283,12 +284,40 @@ fn refine_homography(
     }
 
     // 微調整: 全既知セル (コーナー + 擬似ランダム較正) で座標降下
+    descend(img, corners, layout, thr, &[2.0, 1.0, 0.5])
+}
+
+/// 4 隅を指定ステップ列の座標降下で微調整する (全既知セルの一致数を最大化)。
+/// フル探索の微調整段と、トラッキング時の追従の両方で使う。
+fn descend(
+    img: &GrayImage,
+    corners: &mut [(f32, f32); 4],
+    layout: Layout,
+    thr: u8,
+    steps: &[f32],
+) -> Option<Homography> {
+    let (wc, hc) = (layout.width() as f32, layout.height() as f32);
+    let src = [(0.0, 0.0), (wc, 0.0), (wc, hc), (0.0, hc)];
+    let fine = known_cells(layout);
+
+    let score = |quad: &[(f32, f32); 4]| -> Option<(Homography, usize)> {
+        let hm = Homography::from_quad(&src, quad)?;
+        let n = fine
+            .iter()
+            .filter(|&&(r, c, black)| {
+                let (x, y) = hm.map(c as f32 + 0.5, r as f32 + 0.5);
+                (img.bilinear(x, y) < thr as f32) == black
+            })
+            .count();
+        Some((hm, n))
+    };
+
     let mut best_h = None;
-    for &step in &[2.0f32, 1.0, 0.5] {
+    for &step in steps {
         for _ in 0..2 {
             for k in 0..4 {
                 let base = corners[k];
-                let mut best = score(corners, &fine)?;
+                let mut best = score(corners)?;
                 for dy in -2i32..=2 {
                     for dx in -2i32..=2 {
                         if dx == 0 && dy == 0 {
@@ -296,7 +325,7 @@ fn refine_homography(
                         }
                         let mut cand = *corners;
                         cand[k] = (base.0 + dx as f32 * step, base.1 + dy as f32 * step);
-                        if let Some((hm, n)) = score(&cand, &fine) {
+                        if let Some((hm, n)) = score(&cand) {
                             if n > best.1 {
                                 best = (hm, n);
                                 corners[k] = cand[k];
@@ -309,6 +338,19 @@ fn refine_homography(
         }
     }
     best_h
+}
+
+/// hm でサンプリングした全セル値から Otsu 閾値を求める
+fn threshold_for(img: &GrayImage, hm: &Homography, layout: Layout) -> u8 {
+    let (w, h) = (layout.width(), layout.height());
+    let mut values = vec![0u8; w * h];
+    for r in 0..h {
+        for c in 0..w {
+            let (x, y) = hm.map(c as f32 + 0.5, r as f32 + 0.5);
+            values[r * w + c] = img.bilinear(x, y).round().clamp(0.0, 255.0) as u8;
+        }
+    }
+    otsu(values.iter().copied())
 }
 
 /// ガイド枠 (おおよその 4 隅) を頼りに、グレースケール画像から vcode フレームをスキャンする。
@@ -329,25 +371,44 @@ pub fn scan_frame(
         &corners,
     )
     .ok_or(FrameError::CornerMismatch)?;
-    let (w, h) = (layout.width(), layout.height());
-    let sample_all = |hm: &Homography| -> Vec<u8> {
-        let mut values = vec![0u8; w * h];
-        for r in 0..h {
-            for c in 0..w {
-                let (x, y) = hm.map(c as f32 + 0.5, r as f32 + 0.5);
-                values[r * w + c] = img.bilinear(x, y).round().clamp(0.0, 255.0) as u8;
-            }
-        }
-        values
-    };
-    let thr0 = otsu(sample_all(&hmat0).iter().copied());
+    let thr0 = threshold_for(img, &hmat0, layout);
 
-    // 既知パターン (コーナー + 市松ストリップ) への一致を最大化するよう 4 隅を微調整
+    // 既知パターン (コーナー + 擬似ランダム較正) への一致を最大化するよう 4 隅を微調整
     let hmat = refine_homography(img, &mut corners, layout, thr0)
         .ok_or(FrameError::CornerMismatch)?;
 
-    // 精密化後のホモグラフィで二値化閾値を確定
-    let thr = otsu(sample_all(&hmat).iter().copied()) as f32;
+    decode_at(img, hmat, layout)
+}
+
+/// 前フレームで成功した 4 隅を初期値に、粗探索なしの座標降下だけで追従スキャンする。
+/// 手持ちのフレーム間変位 (数 px) を吸収する。大きく外れた場合はエラーを返すので、
+/// 呼び出し側は scan_frame (フル探索) にフォールバックすること。
+pub fn scan_frame_tracked(
+    img: &GrayImage,
+    prev_corners: &[(f32, f32); 4],
+    layout: Layout,
+) -> Result<ScanResult, FrameError> {
+    let (wc, hc) = (layout.width() as f32, layout.height() as f32);
+    let mut corners = *prev_corners;
+    let hmat0 = Homography::from_quad(
+        &[(0.0, 0.0), (wc, 0.0), (wc, hc), (0.0, hc)],
+        &corners,
+    )
+    .ok_or(FrameError::CornerMismatch)?;
+    let thr0 = threshold_for(img, &hmat0, layout);
+    let hmat = descend(img, &mut corners, layout, thr0, &[4.0, 2.0, 1.0, 0.5])
+        .ok_or(FrameError::CornerMismatch)?;
+    decode_at(img, hmat, layout)
+}
+
+/// 確定したホモグラフィでフレームをデコードする (コーナー照合 + ヘッダ + ブロック部分回収)
+fn decode_at(
+    img: &GrayImage,
+    hmat: Homography,
+    layout: Layout,
+) -> Result<ScanResult, FrameError> {
+    let (w, h) = (layout.width(), layout.height());
+    let thr = threshold_for(img, &hmat, layout) as f32;
 
     // セル (row+dy, col+dx) を実数座標でサンプリング (dx, dy はサブセルオフセット)
     let sample = |r: usize, c: usize, dx: f32, dy: f32| -> bool {
@@ -416,8 +477,15 @@ pub fn scan_frame(
         })
         .collect();
 
+    let (wc, hc) = (w as f32, h as f32);
     Ok(ScanResult {
         frame: DecodedFrame { header, blocks },
+        corners: [
+            hmat.map(0.0, 0.0),
+            hmat.map(wc, 0.0),
+            hmat.map(wc, hc),
+            hmat.map(0.0, hc),
+        ],
         homography: hmat,
     })
 }

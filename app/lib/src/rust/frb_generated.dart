@@ -69,7 +69,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => 227308565;
+  int get rustContentHash => 829438833;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -121,6 +121,19 @@ abstract class RustLibApi extends BaseApi {
     required FountainEncoder that,
   });
 
+  VcodeRx crateApiVcodeVcodeRxNew();
+
+  Future<VcodeScanReport> crateApiVcodeVcodeRxScan({
+    required VcodeRx that,
+    required List<int> y,
+    required int width,
+    required int height,
+    required int stride,
+    required int rotationDeg,
+    required double guideFrac,
+    required bool debugDump,
+  });
+
   int crateApiVcodeVcodeTxFrameCount({required VcodeTx that});
 
   VcodeFrameImage crateApiVcodeVcodeTxFrameGray({
@@ -145,16 +158,6 @@ abstract class RustLibApi extends BaseApi {
     required int minVersion,
   });
 
-  Future<VcodeScanReport> crateApiVcodeVcodeScanGray({
-    required List<int> y,
-    required int width,
-    required int height,
-    required int stride,
-    required int rotationDeg,
-    required double guideFrac,
-    required bool debugDump,
-  });
-
   RustArcIncrementStrongCountFnType
   get rust_arc_increment_strong_count_FountainDecoder;
 
@@ -172,6 +175,12 @@ abstract class RustLibApi extends BaseApi {
 
   CrossPlatformFinalizerArg
   get rust_arc_decrement_strong_count_FountainEncoderPtr;
+
+  RustArcIncrementStrongCountFnType get rust_arc_increment_strong_count_VcodeRx;
+
+  RustArcDecrementStrongCountFnType get rust_arc_decrement_strong_count_VcodeRx;
+
+  CrossPlatformFinalizerArg get rust_arc_decrement_strong_count_VcodeRxPtr;
 
   RustArcIncrementStrongCountFnType get rust_arc_increment_strong_count_VcodeTx;
 
@@ -472,6 +481,96 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  VcodeRx crateApiVcodeVcodeRxNew() {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 10)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData:
+              sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVcodeRx,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiVcodeVcodeRxNewConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiVcodeVcodeRxNewConstMeta =>
+      const TaskConstMeta(debugName: "VcodeRx_new", argNames: []);
+
+  @override
+  Future<VcodeScanReport> crateApiVcodeVcodeRxScan({
+    required VcodeRx that,
+    required List<int> y,
+    required int width,
+    required int height,
+    required int stride,
+    required int rotationDeg,
+    required double guideFrac,
+    required bool debugDump,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVcodeRx(
+            that,
+            serializer,
+          );
+          sse_encode_list_prim_u_8_loose(y, serializer);
+          sse_encode_u_32(width, serializer);
+          sse_encode_u_32(height, serializer);
+          sse_encode_u_32(stride, serializer);
+          sse_encode_u_32(rotationDeg, serializer);
+          sse_encode_f_64(guideFrac, serializer);
+          sse_encode_bool(debugDump, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 11,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_vcode_scan_report,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiVcodeVcodeRxScanConstMeta,
+        argValues: [
+          that,
+          y,
+          width,
+          height,
+          stride,
+          rotationDeg,
+          guideFrac,
+          debugDump,
+        ],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiVcodeVcodeRxScanConstMeta => const TaskConstMeta(
+    debugName: "VcodeRx_scan",
+    argNames: [
+      "that",
+      "y",
+      "width",
+      "height",
+      "stride",
+      "rotationDeg",
+      "guideFrac",
+      "debugDump",
+    ],
+  );
+
+  @override
   int crateApiVcodeVcodeTxFrameCount({required VcodeTx that}) {
     return handler.executeSync(
       SyncTask(
@@ -481,7 +580,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 10)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 12)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_u_32,
@@ -511,7 +610,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_u_32(i, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 11)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 13)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_vcode_frame_image,
@@ -541,7 +640,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_list_prim_u_8_loose(payload, serializer);
           sse_encode_u_32(extraRepair, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 12)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 14)!;
         },
         codec: SseCodec(
           decodeSuccessData:
@@ -570,7 +669,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 13)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 15)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_u_32,
@@ -596,7 +695,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(name, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 14)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 16)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -621,7 +720,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 15,
+            funcId: 17,
             port: port_,
           );
         },
@@ -652,7 +751,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_list_prim_u_8_loose(data, serializer);
           sse_encode_String(ec, serializer);
           sse_encode_u_8(minVersion, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 16)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 18)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_qr_matrix,
@@ -670,66 +769,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     argNames: ["data", "ec", "minVersion"],
   );
 
-  @override
-  Future<VcodeScanReport> crateApiVcodeVcodeScanGray({
-    required List<int> y,
-    required int width,
-    required int height,
-    required int stride,
-    required int rotationDeg,
-    required double guideFrac,
-    required bool debugDump,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_list_prim_u_8_loose(y, serializer);
-          sse_encode_u_32(width, serializer);
-          sse_encode_u_32(height, serializer);
-          sse_encode_u_32(stride, serializer);
-          sse_encode_u_32(rotationDeg, serializer);
-          sse_encode_f_64(guideFrac, serializer);
-          sse_encode_bool(debugDump, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 17,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_vcode_scan_report,
-          decodeErrorData: null,
-        ),
-        constMeta: kCrateApiVcodeVcodeScanGrayConstMeta,
-        argValues: [
-          y,
-          width,
-          height,
-          stride,
-          rotationDeg,
-          guideFrac,
-          debugDump,
-        ],
-        apiImpl: this,
-      ),
-    );
-  }
-
-  TaskConstMeta get kCrateApiVcodeVcodeScanGrayConstMeta => const TaskConstMeta(
-    debugName: "vcode_scan_gray",
-    argNames: [
-      "y",
-      "width",
-      "height",
-      "stride",
-      "rotationDeg",
-      "guideFrac",
-      "debugDump",
-    ],
-  );
-
   RustArcIncrementStrongCountFnType
   get rust_arc_increment_strong_count_FountainDecoder => wire
       .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFountainDecoder;
@@ -745,6 +784,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   RustArcDecrementStrongCountFnType
   get rust_arc_decrement_strong_count_FountainEncoder => wire
       .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFountainEncoder;
+
+  RustArcIncrementStrongCountFnType
+  get rust_arc_increment_strong_count_VcodeRx => wire
+      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVcodeRx;
+
+  RustArcDecrementStrongCountFnType
+  get rust_arc_decrement_strong_count_VcodeRx => wire
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVcodeRx;
 
   RustArcIncrementStrongCountFnType
   get rust_arc_increment_strong_count_VcodeTx => wire
@@ -773,6 +820,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  VcodeRx
+  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVcodeRx(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return VcodeRxImpl.frbInternalDcoDecode(raw as List<dynamic>);
+  }
+
+  @protected
   VcodeTx
   dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVcodeTx(
     dynamic raw,
@@ -788,6 +844,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return FountainDecoderImpl.frbInternalDcoDecode(raw as List<dynamic>);
+  }
+
+  @protected
+  VcodeRx
+  dco_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVcodeRx(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return VcodeRxImpl.frbInternalDcoDecode(raw as List<dynamic>);
   }
 
   @protected
@@ -833,6 +898,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return FountainEncoderImpl.frbInternalDcoDecode(raw as List<dynamic>);
+  }
+
+  @protected
+  VcodeRx
+  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVcodeRx(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return VcodeRxImpl.frbInternalDcoDecode(raw as List<dynamic>);
   }
 
   @protected
@@ -957,19 +1031,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   VcodeScanReport dco_decode_vcode_scan_report(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 10)
-      throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
+    if (arr.length != 11)
+      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
     return VcodeScanReport(
       detected: dco_decode_bool(arr[0]),
-      frameSeq: dco_decode_u_32(arr[1]),
-      oti: dco_decode_list_prim_u_8_strict(arr[2]),
-      packets: dco_decode_list_list_prim_u_8_strict(arr[3]),
-      blocksOk: dco_decode_u_32(arr[4]),
-      blocksTotal: dco_decode_u_32(arr[5]),
-      error: dco_decode_opt_String(arr[6]),
-      debugGray: dco_decode_opt_list_prim_u_8_strict(arr[7]),
-      debugW: dco_decode_u_32(arr[8]),
-      debugH: dco_decode_u_32(arr[9]),
+      tracked: dco_decode_bool(arr[1]),
+      frameSeq: dco_decode_u_32(arr[2]),
+      oti: dco_decode_list_prim_u_8_strict(arr[3]),
+      packets: dco_decode_list_list_prim_u_8_strict(arr[4]),
+      blocksOk: dco_decode_u_32(arr[5]),
+      blocksTotal: dco_decode_u_32(arr[6]),
+      error: dco_decode_opt_String(arr[7]),
+      debugGray: dco_decode_opt_list_prim_u_8_strict(arr[8]),
+      debugW: dco_decode_u_32(arr[9]),
+      debugH: dco_decode_u_32(arr[10]),
     );
   }
 
@@ -998,6 +1073,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  VcodeRx
+  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVcodeRx(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return VcodeRxImpl.frbInternalSseDecode(
+      sse_decode_usize(deserializer),
+      sse_decode_i_32(deserializer),
+    );
+  }
+
+  @protected
   VcodeTx
   sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVcodeTx(
     SseDeserializer deserializer,
@@ -1016,6 +1103,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return FountainDecoderImpl.frbInternalSseDecode(
+      sse_decode_usize(deserializer),
+      sse_decode_i_32(deserializer),
+    );
+  }
+
+  @protected
+  VcodeRx
+  sse_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVcodeRx(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return VcodeRxImpl.frbInternalSseDecode(
       sse_decode_usize(deserializer),
       sse_decode_i_32(deserializer),
     );
@@ -1076,6 +1175,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return FountainEncoderImpl.frbInternalSseDecode(
+      sse_decode_usize(deserializer),
+      sse_decode_i_32(deserializer),
+    );
+  }
+
+  @protected
+  VcodeRx
+  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVcodeRx(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return VcodeRxImpl.frbInternalSseDecode(
       sse_decode_usize(deserializer),
       sse_decode_i_32(deserializer),
     );
@@ -1222,6 +1333,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   VcodeScanReport sse_decode_vcode_scan_report(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_detected = sse_decode_bool(deserializer);
+    var var_tracked = sse_decode_bool(deserializer);
     var var_frameSeq = sse_decode_u_32(deserializer);
     var var_oti = sse_decode_list_prim_u_8_strict(deserializer);
     var var_packets = sse_decode_list_list_prim_u_8_strict(deserializer);
@@ -1233,6 +1345,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_debugH = sse_decode_u_32(deserializer);
     return VcodeScanReport(
       detected: var_detected,
+      tracked: var_tracked,
       frameSeq: var_frameSeq,
       oti: var_oti,
       packets: var_packets,
@@ -1279,6 +1392,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   void
+  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVcodeRx(
+    VcodeRx self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_usize(
+      (self as VcodeRxImpl).frbInternalSseEncode(move: true),
+      serializer,
+    );
+  }
+
+  @protected
+  void
   sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVcodeTx(
     VcodeTx self,
     SseSerializer serializer,
@@ -1299,6 +1425,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_usize(
       (self as FountainDecoderImpl).frbInternalSseEncode(move: false),
+      serializer,
+    );
+  }
+
+  @protected
+  void
+  sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVcodeRx(
+    VcodeRx self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_usize(
+      (self as VcodeRxImpl).frbInternalSseEncode(move: false),
       serializer,
     );
   }
@@ -1364,6 +1503,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_usize(
       (self as FountainEncoderImpl).frbInternalSseEncode(move: null),
+      serializer,
+    );
+  }
+
+  @protected
+  void
+  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVcodeRx(
+    VcodeRx self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_usize(
+      (self as VcodeRxImpl).frbInternalSseEncode(move: null),
       serializer,
     );
   }
@@ -1516,6 +1668,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_bool(self.detected, serializer);
+    sse_encode_bool(self.tracked, serializer);
     sse_encode_u_32(self.frameSeq, serializer);
     sse_encode_list_prim_u_8_strict(self.oti, serializer);
     sse_encode_list_list_prim_u_8_strict(self.packets, serializer);
@@ -1600,6 +1753,49 @@ class FountainEncoderImpl extends RustOpaque implements FountainEncoder {
   /// 生成済みパケットの総数。送信側はこの値で循環表示する (Dart 側 int)。
   int packetCount() => RustLib.instance.api
       .crateApiFountainFountainEncoderPacketCount(that: this);
+}
+
+@sealed
+class VcodeRxImpl extends RustOpaque implements VcodeRx {
+  // Not to be used by end users
+  VcodeRxImpl.frbInternalDcoDecode(List<dynamic> wire)
+    : super.frbInternalDcoDecode(wire, _kStaticData);
+
+  // Not to be used by end users
+  VcodeRxImpl.frbInternalSseDecode(BigInt ptr, int externalSizeOnNative)
+    : super.frbInternalSseDecode(ptr, externalSizeOnNative, _kStaticData);
+
+  static final _kStaticData = RustArcStaticData(
+    rustArcIncrementStrongCount:
+        RustLib.instance.api.rust_arc_increment_strong_count_VcodeRx,
+    rustArcDecrementStrongCount:
+        RustLib.instance.api.rust_arc_decrement_strong_count_VcodeRx,
+    rustArcDecrementStrongCountPtr:
+        RustLib.instance.api.rust_arc_decrement_strong_count_VcodeRxPtr,
+  );
+
+  /// カメラの Y プレーンから vcode をスキャンする。
+  /// トラッキング成功時は report.tracked = true。
+  /// 注: sync にしない。非同期 (Rust ワーカースレッド実行) にすることで
+  /// UI isolate をブロックせず、カメラプレビューのカクつきを防ぐ。
+  Future<VcodeScanReport> scan({
+    required List<int> y,
+    required int width,
+    required int height,
+    required int stride,
+    required int rotationDeg,
+    required double guideFrac,
+    required bool debugDump,
+  }) => RustLib.instance.api.crateApiVcodeVcodeRxScan(
+    that: this,
+    y: y,
+    width: width,
+    height: height,
+    stride: stride,
+    rotationDeg: rotationDeg,
+    guideFrac: guideFrac,
+    debugDump: debugDump,
+  );
 }
 
 @sealed

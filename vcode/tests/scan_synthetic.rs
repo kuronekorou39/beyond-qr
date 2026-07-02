@@ -123,6 +123,45 @@ fn scan_recovers_from_perspective_and_noise() {
 }
 
 #[test]
+fn tracked_scan_follows_small_motion() {
+    use beyond_qr_vcode::scan::scan_frame_tracked;
+    let layout = Layout::V0;
+    let (header, blocks) = test_frame(layout, 0x5E);
+    let frame_px = encode_frame(&header, &blocks, 8);
+
+    let dst1 = [
+        (180.0f32, 130.0),
+        (1010.0, 155.0),
+        (985.0, 950.0),
+        (205.0, 920.0),
+    ];
+    let canvas1 = synth_camera_image(&frame_px, 1280, 1080, &dst1, 0x1111);
+    let img1 = GrayImage { w: 1280, h: 1080, data: &canvas1 };
+    let guide = Quad {
+        tl: (dst1[0].0 - 15.0, dst1[0].1 + 10.0),
+        tr: (dst1[1].0 + 12.0, dst1[1].1 - 8.0),
+        br: (dst1[2].0 + 10.0, dst1[2].1 + 14.0),
+        bl: (dst1[3].0 - 9.0, dst1[3].1 - 12.0),
+    };
+    let first = scan_frame(&img1, &guide, layout).expect("初回フル探索が失敗");
+
+    // 手持ちのフレーム間変位を模擬: 全体が数 px 平行移動 + 微小な歪み
+    let dst2 = [
+        (dst1[0].0 + 4.0, dst1[0].1 - 3.0),
+        (dst1[1].0 + 5.0, dst1[1].1 - 2.0),
+        (dst1[2].0 + 3.0, dst1[2].1 - 4.0),
+        (dst1[3].0 + 5.0, dst1[3].1 - 3.0),
+    ];
+    let canvas2 = synth_camera_image(&frame_px, 1280, 1080, &dst2, 0x2222);
+    let img2 = GrayImage { w: 1280, h: 1080, data: &canvas2 };
+
+    let tracked = scan_frame_tracked(&img2, &first.corners, layout).expect("追従スキャンが失敗");
+    assert_eq!(tracked.frame.header, header);
+    let ok = tracked.frame.blocks.iter().filter(|b| b.is_some()).count();
+    assert!(ok >= 19, "追従スキャンの回収が少なすぎる: {ok}/20");
+}
+
+#[test]
 fn scan_fails_gracefully_on_blank_image() {
     let blank = vec![250u8; 640 * 480];
     let img = GrayImage { w: 640, h: 480, data: &blank };

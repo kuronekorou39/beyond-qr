@@ -6,31 +6,26 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `fail`
+// These functions are ignored because they are not marked as `pub`: `fail`, `rotate_y_plane`, `success`
 
-/// カメラの Y プレーンから vcode をスキャンする。
-///
-/// - stride: Y プレーンの行バイト数 (>= width)
-/// - rotation_deg: 反時計回りに画像を起こす回転 (0/90/180/270)。
-///   Android は通常 sensorOrientation=90 のとき 90 を渡す。
-/// - guide_frac: 回転後画像の幅に対するガイド枠幅の比 (UI のガイド枠と同じ値を渡す)
-Future<VcodeScanReport> vcodeScanGray({
-  required List<int> y,
-  required int width,
-  required int height,
-  required int stride,
-  required int rotationDeg,
-  required double guideFrac,
-  required bool debugDump,
-}) => RustLib.instance.api.crateApiVcodeVcodeScanGray(
-  y: y,
-  width: width,
-  height: height,
-  stride: stride,
-  rotationDeg: rotationDeg,
-  guideFrac: guideFrac,
-  debugDump: debugDump,
-);
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<VcodeRx>>
+abstract class VcodeRx implements RustOpaqueInterface {
+  factory VcodeRx() => RustLib.instance.api.crateApiVcodeVcodeRxNew();
+
+  /// カメラの Y プレーンから vcode をスキャンする。
+  /// トラッキング成功時は report.tracked = true。
+  /// 注: sync にしない。非同期 (Rust ワーカースレッド実行) にすることで
+  /// UI isolate をブロックせず、カメラプレビューのカクつきを防ぐ。
+  Future<VcodeScanReport> scan({
+    required List<int> y,
+    required int width,
+    required int height,
+    required int stride,
+    required int rotationDeg,
+    required double guideFrac,
+    required bool debugDump,
+  });
+}
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<VcodeTx>>
 abstract class VcodeTx implements RustOpaqueInterface {
@@ -81,6 +76,9 @@ class VcodeFrameImage {
 /// スキャン結果。detected=false のとき error に理由 (デバッグログ用)。
 class VcodeScanReport {
   final bool detected;
+
+  /// トラッキング (前フレームからの追従) で検出したか (効果検証用)
+  final bool tracked;
   final int frameSeq;
   final Uint8List oti;
 
@@ -97,6 +95,7 @@ class VcodeScanReport {
 
   const VcodeScanReport({
     required this.detected,
+    required this.tracked,
     required this.frameSeq,
     required this.oti,
     required this.packets,
@@ -111,6 +110,7 @@ class VcodeScanReport {
   @override
   int get hashCode =>
       detected.hashCode ^
+      tracked.hashCode ^
       frameSeq.hashCode ^
       oti.hashCode ^
       packets.hashCode ^
@@ -127,6 +127,7 @@ class VcodeScanReport {
       other is VcodeScanReport &&
           runtimeType == other.runtimeType &&
           detected == other.detected &&
+          tracked == other.tracked &&
           frameSeq == other.frameSeq &&
           oti == other.oti &&
           packets == other.packets &&

@@ -26,6 +26,7 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
   CameraController? _cam;
   bool _busy = false;
   bool _active = false;
+  VcodeRx? _rx;
 
   FountainDecoder? _dec;
   Uint8List? _payload;
@@ -34,6 +35,7 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
   // 統計
   int _framesSeen = 0;
   int _framesDetected = 0;
+  int _framesTracked = 0;
   int _blocksOk = 0;
   int _packetsAdded = 0;
   int _lastScanMs = 0;
@@ -63,6 +65,7 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
         imageFormatGroup: ImageFormatGroup.yuv420,
       );
       await cam.initialize();
+      _rx = VcodeRx();
       await cam.startImageStream(_onFrame);
       await WakelockPlus.enable();
       setState(() {
@@ -84,7 +87,9 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
       final rotation = _cam?.description.sensorOrientation ?? 90;
       // 未検出のあいだ 150 フレームごとに処理済み画像を上書き保存 (PC 解析用)
       final wantDump = _framesDetected == 0 && _framesSeen > 0 && _framesSeen % 150 == 0;
-      final report = await vcodeScanGray(
+      final rx = _rx;
+      if (rx == null) return;
+      final report = await rx.scan(
         y: y.bytes,
         width: img.width,
         height: img.height,
@@ -103,6 +108,7 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
       _scanCount++;
       if (report.detected) {
         _framesDetected++;
+        if (report.tracked) _framesTracked++;
         _firstDetected ??= DateTime.now();
         _blocksOk += report.blocksOk;
         _dec ??= FountainDecoder(otiBytes: report.oti);
@@ -116,7 +122,8 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
         }
         debugPrint('[vcode-rx] seq=${report.frameSeq} '
             'blocks=${report.blocksOk}/${report.blocksTotal} '
-            'pkts=$_packetsAdded scan=${_lastScanMs}ms done=$done');
+            'pkts=$_packetsAdded scan=${_lastScanMs}ms '
+            'tracked=${report.tracked} done=$done');
         if (done) {
           _onComplete(_dec!.payload()!);
           return;
@@ -191,6 +198,7 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
       _savedPath = null;
       _framesSeen = 0;
       _framesDetected = 0;
+      _framesTracked = 0;
       _blocksOk = 0;
       _packetsAdded = 0;
       _scanMsSum = 0;
@@ -223,7 +231,7 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
       ('サイズ', '${p.length} B'),
       ('所要時間 (初検出→完了)', ms >= 1000 ? '${(ms / 1000).toStringAsFixed(2)} 秒' : '$ms ms'),
       ('実効スループット', '${kbps.toStringAsFixed(1)} KB/s'),
-      ('カメラフレーム数', '$_framesSeen (検出 $_framesDetected)'),
+      ('カメラフレーム数', '$_framesSeen (検出 $_framesDetected / 追従 $_framesTracked)'),
       ('回収ブロック', '$_blocksOk (部分回収込み)'),
       ('投入パケット', '$_packetsAdded'),
       ('平均スキャン時間', _scanCount > 0 ? '${(_scanMsSum / _scanCount).round()} ms' : '-'),
