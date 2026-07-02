@@ -1,9 +1,13 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
+import 'dart:ui' as ui;
+import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'src/rust/api/qr.dart';
+import 'src/rust/api/vcode.dart';
 
 /// 校正モード: 送信側が「ゆるい→きつい」レベルのテストパターンを表示し、
 /// 受信側が「どのレベルまで読めるか」を確認する (オフラインの人アシスト校正)。
@@ -47,31 +51,72 @@ class CalibrationScreen extends StatefulWidget {
 
 class _CalibrationScreenState extends State<CalibrationScreen> {
   bool _send = true; // true=送信(表示), false=受信(確認)
+  bool _qr = true; // true=QR, false=vcode
 
   @override
   Widget build(BuildContext context) {
+    final Widget body;
+    if (_qr) {
+      body = _send ? const _CalSend() : const _CalReceive();
+    } else {
+      body = _send ? const _VCalSend() : const _VCalReceive();
+    }
     return Scaffold(
       appBar: AppBar(
-        title: const Text('校正 (QR)'),
+        title: Text('校正 (${_qr ? "QR" : "vcode"})'),
         bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(48),
-          child: Padding(
-            padding: const EdgeInsets.only(bottom: 8),
-            child: SegmentedButton<bool>(
-              segments: const [
-                ButtonSegment(value: true, label: Text('送信(表示)'), icon: Icon(Icons.qr_code_2)),
-                ButtonSegment(value: false, label: Text('受信(確認)'), icon: Icon(Icons.center_focus_strong)),
-              ],
-              selected: {_send},
-              onSelectionChanged: (s) => setState(() => _send = s.first),
-            ),
+          preferredSize: const Size.fromHeight(96),
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: SegmentedButton<bool>(
+                  segments: const [
+                    ButtonSegment(value: true, label: Text('QR')),
+                    ButtonSegment(value: false, label: Text('vcode')),
+                  ],
+                  selected: {_qr},
+                  onSelectionChanged: (s) => setState(() => _qr = s.first),
+                ),
+              ),
+              const SizedBox(height: 6),
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8, left: 8, right: 8),
+                child: SegmentedButton<bool>(
+                  segments: const [
+                    ButtonSegment(value: true, label: Text('送信(表示)'), icon: Icon(Icons.grid_on)),
+                    ButtonSegment(
+                        value: false, label: Text('受信(確認)'), icon: Icon(Icons.center_focus_strong)),
+                  ],
+                  selected: {_send},
+                  onSelectionChanged: (s) => setState(() => _send = s.first),
+                ),
+              ),
+            ],
           ),
         ),
       ),
-      body: _send ? const _CalSend() : const _CalReceive(),
+      body: body,
     );
   }
 }
+
+// ============ vcode 校正: レベル定義 ============
+class VCalLevel {
+  final String label;
+  final int gw;
+  final int gh;
+  const VCalLevel(this.label, this.gw, this.gh);
+  int get blocks => gw * gh;
+}
+
+const vCalLevels = <VCalLevel>[
+  VCalLevel('Lv1  3×2 特ゆる', 3, 2),
+  VCalLevel('Lv2  4×3', 4, 3),
+  VCalLevel('Lv3  5×4 標準', 5, 4),
+  VCalLevel('Lv4  6×5', 6, 5),
+  VCalLevel('Lv5  7×6 高密度', 7, 6),
+];
 
 // ============ 送信 (テストパターン表示) ============
 class _CalSend extends StatefulWidget {
@@ -260,6 +305,255 @@ class _CalReceiveState extends State<_CalReceive> {
                 runSpacing: 4,
                 children: [
                   for (var i = 0; i < qrCalLevels.length; i++)
+                    Chip(
+                      visualDensity: VisualDensity.compact,
+                      avatar: Icon(
+                        _readable.contains(i) ? Icons.check_circle : Icons.circle_outlined,
+                        color: _readable.contains(i) ? Colors.green : Colors.grey,
+                        size: 18,
+                      ),
+                      label: Text('Lv${i + 1}'),
+                    ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// ============ vcode 校正: 送信 (テストフレーム表示) ============
+class _VCalSend extends StatefulWidget {
+  const _VCalSend();
+  @override
+  State<_VCalSend> createState() => _VCalSendState();
+}
+
+class _VCalSendState extends State<_VCalSend> {
+  int _lv = 2; // 既定は標準(5×4)
+  ui.Image? _image;
+  final _payload = Uint8List.fromList(utf8.encode('VCAL-CALIBRATION-PATTERN'));
+
+  @override
+  void initState() {
+    super.initState();
+    _rebuild();
+  }
+
+  Future<void> _rebuild() async {
+    final lv = vCalLevels[_lv];
+    final tx = VcodeTx(payload: _payload, extraRepair: 4, gridW: lv.gw, gridH: lv.gh, bitsPerCell: 1);
+    final f = tx.frameGray(i: 0);
+    final rgba = Uint8List(f.width * f.height * 4);
+    for (var i = 0; i < f.width * f.height; i++) {
+      final v = f.pixels[i];
+      rgba[i * 4] = v;
+      rgba[i * 4 + 1] = v;
+      rgba[i * 4 + 2] = v;
+      rgba[i * 4 + 3] = 255;
+    }
+    final done = Completer<ui.Image>();
+    ui.decodeImageFromPixels(rgba, f.width, f.height, ui.PixelFormat.rgba8888, done.complete);
+    final img = await done.future;
+    if (mounted) setState(() => _image = img);
+  }
+
+  void _set(int lv) {
+    setState(() => _lv = lv);
+    _rebuild();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final lv = vCalLevels[_lv];
+    return Column(
+      children: [
+        Expanded(
+          child: Container(
+            color: Colors.white,
+            alignment: Alignment.center,
+            child: _image == null
+                ? const CircularProgressIndicator()
+                : AspectRatio(
+                    aspectRatio: _image!.width / _image!.height,
+                    child: RawImage(
+                        image: _image, fit: BoxFit.contain, filterQuality: FilterQuality.none),
+                  ),
+          ),
+        ),
+        Container(
+          padding: const EdgeInsets.all(12),
+          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+          child: Column(
+            children: [
+              Text(lv.label, style: Theme.of(context).textTheme.titleLarge),
+              const SizedBox(height: 4),
+              Text('受信側が「読めた」と出たらこの密度はOK。ゆるい→きつい と上げて限界を探す',
+                  style: Theme.of(context).textTheme.bodySmall),
+              const SizedBox(height: 8),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  IconButton.filledTonal(
+                    onPressed: _lv > 0 ? () => _set(_lv - 1) : null,
+                    icon: const Icon(Icons.chevron_left),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: Text('${_lv + 1} / ${vCalLevels.length}',
+                        style: Theme.of(context).textTheme.titleMedium),
+                  ),
+                  IconButton.filledTonal(
+                    onPressed: _lv < vCalLevels.length - 1 ? () => _set(_lv + 1) : null,
+                    icon: const Icon(Icons.chevron_right),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// ============ vcode 校正: 受信 (どの密度まで検出できるか) ============
+class _VCalReceive extends StatefulWidget {
+  const _VCalReceive();
+  @override
+  State<_VCalReceive> createState() => _VCalReceiveState();
+}
+
+class _VCalReceiveState extends State<_VCalReceive> {
+  CameraController? _cam;
+  VcodeRx? _rx;
+  bool _busy = false;
+  bool _active = false;
+  final Set<int> _readable = {};
+  int _lastBlocksOk = 0;
+  int _lastBlocksTotal = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _initCamera();
+  }
+
+  Future<void> _initCamera() async {
+    try {
+      final cams = await availableCameras();
+      final back = cams.firstWhere((c) => c.lensDirection == CameraLensDirection.back,
+          orElse: () => cams.first);
+      final cam = CameraController(back, ResolutionPreset.veryHigh,
+          enableAudio: false, imageFormatGroup: ImageFormatGroup.yuv420);
+      await cam.initialize();
+      _rx = VcodeRx();
+      await cam.startImageStream(_onFrame);
+      await WakelockPlus.enable();
+      if (mounted) {
+        setState(() {
+          _cam = cam;
+          _active = true;
+        });
+      }
+    } catch (_) {}
+  }
+
+  int _levelFromBlocks(int blocks) {
+    for (var i = 0; i < vCalLevels.length; i++) {
+      if (vCalLevels[i].blocks == blocks) return i;
+    }
+    return -1;
+  }
+
+  Future<void> _onFrame(CameraImage img) async {
+    if (_busy || !_active) return;
+    _busy = true;
+    try {
+      final y = img.planes[0];
+      final rx = _rx;
+      if (rx == null) return;
+      final report = await rx.scan(
+        y: y.bytes,
+        width: img.width,
+        height: img.height,
+        stride: y.bytesPerRow,
+        rotationDeg: _cam?.description.sensorOrientation ?? 90,
+        guideFrac: 0.9,
+        debugDump: false,
+      );
+      if (!_active) return;
+      if (report.detected && report.blocksTotal > 0) {
+        _lastBlocksOk = report.blocksOk;
+        _lastBlocksTotal = report.blocksTotal;
+        if (report.blocksOk * 10 >= report.blocksTotal * 8) {
+          final lv = _levelFromBlocks(report.blocksTotal);
+          if (lv >= 0) _readable.add(lv);
+        }
+        if (mounted) setState(() {});
+      }
+    } catch (_) {
+    } finally {
+      _busy = false;
+    }
+  }
+
+  @override
+  void dispose() {
+    _active = false;
+    _cam?.dispose();
+    WakelockPlus.disable();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cam = _cam;
+    final best = _readable.isEmpty ? -1 : _readable.reduce((a, b) => a > b ? a : b);
+    return Column(
+      children: [
+        Expanded(
+          child: Container(
+            color: Colors.black,
+            alignment: Alignment.center,
+            child: cam == null || !cam.value.isInitialized
+                ? const CircularProgressIndicator()
+                : AspectRatio(aspectRatio: cam.value.aspectRatio, child: CameraPreview(cam)),
+          ),
+        ),
+        Container(
+          padding: const EdgeInsets.all(12),
+          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      best < 0
+                          ? '送信側のテストフレームに向けてください'
+                          : '✅ 読めた最密: ${vCalLevels[best].label}',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                  ),
+                  TextButton.icon(
+                    onPressed: () => setState(() => _readable.clear()),
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('リセット'),
+                  ),
+                ],
+              ),
+              if (_lastBlocksTotal > 0)
+                Text('直近: $_lastBlocksOk / $_lastBlocksTotal ブロック検出',
+                    style: Theme.of(context).textTheme.bodySmall),
+              const SizedBox(height: 6),
+              Wrap(
+                spacing: 6,
+                children: [
+                  for (var i = 0; i < vCalLevels.length; i++)
                     Chip(
                       visualDensity: VisualDensity.compact,
                       avatar: Icon(
