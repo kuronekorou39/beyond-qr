@@ -4,6 +4,7 @@
 import init, { FountainEncoder, FountainDecoder } from "./pkg/beyond_qr_core_wasm.js";
 import { Sender } from "./sender.js";
 import { Receiver } from "./receiver.js";
+import { VcodeSender, VcodeReceiver } from "./vcode.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -28,17 +29,21 @@ function selfTest() {
 }
 
 // ---- タブ ----
+const PANES = { send: "paneSend", recv: "paneRecv", vsend: "paneVSend", vrecv: "paneVRecv" };
+const TABS = { send: "tabSend", recv: "tabRecv", vsend: "tabVSend", vrecv: "tabVRecv" };
 function showPane(which) {
-  $("paneSend").classList.toggle("active", which === "send");
-  $("paneRecv").classList.toggle("active", which === "recv");
-  $("tabSend").classList.toggle("active", which === "send");
-  $("tabRecv").classList.toggle("active", which === "recv");
+  for (const [k, id] of Object.entries(PANES)) $(id).classList.toggle("active", k === which);
+  for (const [k, id] of Object.entries(TABS)) $(id).classList.toggle("active", k === which);
 }
-$("tabSend").addEventListener("click", () => showPane("send"));
-$("tabRecv").addEventListener("click", () => showPane("recv"));
+for (const k of Object.keys(TABS)) $(TABS[k]).addEventListener("click", () => showPane(k));
 
-// ---- 送信 ----
+// ---- 送信 (QR / vcode 共用ステージ) ----
+let activeSender = null;
 const sender = new Sender({
+  canvas: $("txCanvas"),
+  onStatus: (s) => { $("txStatus").textContent = s; },
+});
+const vcodeSender = new VcodeSender({
   canvas: $("txCanvas"),
   onStatus: (s) => { $("txStatus").textContent = s; },
 });
@@ -60,6 +65,7 @@ $("txStart").addEventListener("click", async () => {
   $("txInfo").textContent = "";
   fitTxCanvas();
   $("txStage").style.display = "flex";
+  activeSender = sender;
   try {
     await sender.start(file, grid, ec, fps);
   } catch (e) {
@@ -68,8 +74,27 @@ $("txStart").addEventListener("click", async () => {
   }
 });
 $("txStop").addEventListener("click", () => {
-  sender.stop();
+  if (activeSender) activeSender.stop();
   $("txStage").style.display = "none";
+});
+
+// ---- V送信 (vcode) ----
+$("vtxStart").addEventListener("click", async () => {
+  const file = $("vtxFile").files[0];
+  if (!file) { $("vtxInfo").textContent = "ファイルを選択してください"; return; }
+  const grid = $("vtxGrid").value;
+  const bpc = parseInt($("vtxBpc").value) || 2;
+  const fps = Math.max(2, Math.min(30, parseInt($("vtxFps").value) || 12));
+  $("vtxInfo").textContent = "";
+  fitTxCanvas();
+  $("txStage").style.display = "flex";
+  activeSender = vcodeSender;
+  try {
+    await vcodeSender.start(file, grid, bpc, fps);
+  } catch (e) {
+    $("txStage").style.display = "none";
+    $("vtxInfo").textContent = "V送信エラー: " + (e && e.message ? e.message : e);
+  }
 });
 
 // ---- 受信 ----
@@ -118,6 +143,42 @@ $("rxStop").addEventListener("click", () => {
   $("rxStart").disabled = false;
   $("rxStop").disabled = true;
   $("rxInfo").textContent = "停止しました";
+});
+
+// ---- V受信 (vcode) ----
+const vcodeReceiver = new VcodeReceiver({
+  video: $("vrxVideo"),
+  onProgress: ({ frames, detected, blocks, blocksTotal }) => {
+    $("vrxInfo").textContent =
+      `スキャン中 · frames ${frames} · 検出 ${detected} · 直近 ${blocks}/${blocksTotal} ブロック`;
+  },
+  onDone: ({ name, type, size, blob }) => {
+    $("vrxInfo").innerHTML = `<span class="ok">✅ 復元成功: ${name} (${fmtSize(size)})</span>`;
+    const url = URL.createObjectURL(blob);
+    const isImage = type.startsWith("image/");
+    $("vrxResult").innerHTML =
+      (isImage ? `<p><img src="${url}" style="max-width:100%;border-radius:8px" /></p>` : "") +
+      `<p><a href="${url}" download="${name}"><button>ダウンロード: ${name}</button></a></p>`;
+    $("vrxStart").disabled = false;
+    $("vrxStop").disabled = true;
+  },
+});
+$("vrxStart").addEventListener("click", async () => {
+  $("vrxResult").innerHTML = "";
+  try {
+    await vcodeReceiver.start();
+    $("vrxStart").disabled = true;
+    $("vrxStop").disabled = false;
+    $("vrxInfo").textContent = "スキャン中 — 送信側の vcode に向けてください";
+  } catch (e) {
+    $("vrxInfo").textContent = "カメラ起動失敗: " + (e && e.message ? e.message : e);
+  }
+});
+$("vrxStop").addEventListener("click", () => {
+  vcodeReceiver.stop();
+  $("vrxStart").disabled = false;
+  $("vrxStop").disabled = true;
+  $("vrxInfo").textContent = "停止しました";
 });
 
 // ---- 起動 ----

@@ -53,6 +53,8 @@
     <nav>
       <button id="tabSend" class="active">送信</button>
       <button id="tabRecv">受信</button>
+      <button id="tabVSend">V送信</button>
+      <button id="tabVRecv">V受信</button>
     </nav>
     <div id="coreStatus" class="muted">WASM 読み込み中...</div>
   </header>
@@ -104,6 +106,43 @@
           <div id="rxInfo" class="muted">待機中 — 送信側 (スマホ/PC) の QR に向けてください</div>
         </div>
         <div id="rxResult"></div>
+      </div>
+    </section>
+
+    <!-- ============ V送信 (vcode) ============ -->
+    <section id="paneVSend" class="pane">
+      <div class="card">
+        <div class="row"><input type="file" id="vtxFile" /></div>
+        <div class="row">
+          <label>格子:
+            <select id="vtxGrid">
+              <option value="7x6" selected>7×6 (高密度)</option>
+              <option value="5x4">5×4 (標準)</option>
+            </select></label>
+          <label>bit/セル:
+            <select id="vtxBpc">
+              <option value="2" selected>2 (輝度4値)</option>
+              <option value="1">1 (白黒)</option>
+            </select></label>
+          <label>FPS: <input type="number" id="vtxFps" value="12" min="2" max="30" style="width:4em" /></label>
+          <button id="vtxStart">V送信開始</button>
+        </div>
+        <div id="vtxInfo" class="muted">スマホアプリ「V受信」でこの画面に向けてください。</div>
+      </div>
+    </section>
+
+    <!-- ============ V受信 (vcode) ============ -->
+    <section id="paneVRecv" class="pane">
+      <div class="card">
+        <div class="row">
+          <button id="vrxStart">カメラ開始</button>
+          <button id="vrxStop" class="secondary" disabled>停止</button>
+        </div>
+        <div id="rxVideoWrap"><video id="vrxVideo" autoplay playsinline muted></video></div>
+        <div style="margin-top:0.6em">
+          <div id="vrxInfo" class="muted">待機中 — 送信側 (スマホ/PC) の vcode に向けてください</div>
+        </div>
+        <div id="vrxResult"></div>
       </div>
     </section>
   </main>

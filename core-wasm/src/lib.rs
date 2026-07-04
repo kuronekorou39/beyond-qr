@@ -101,3 +101,227 @@ impl FountainDecoder {
         self.inner.payload_size()
     }
 }
+
+// =============================================================
+// vcode (video-native 2D code) の wasm バインディング
+// app/rust/src/api/vcode.rs (frb 版) と同一ロジックを wasm-bindgen で公開する。
+// =============================================================
+use beyond_qr_vcode as vcode;
+use beyond_qr_vcode::scan::{scan_frame, scan_frame_tracked, GrayImage, Quad};
+
+#[wasm_bindgen]
+pub struct VcodeTx {
+    encoder: fountain::Encoder,
+    layout: vcode::Layout,
+    bpc: u8,
+}
+
+#[wasm_bindgen]
+impl VcodeTx {
+    #[wasm_bindgen(constructor)]
+    pub fn new(payload: &[u8], extra_repair: u32, grid_w: u8, grid_h: u8, bits_per_cell: u8) -> VcodeTx {
+        let bpc = if bits_per_cell == 2 { 2 } else { 1 };
+        let layout = vcode::Layout {
+            block: 20,
+            grid_w: grid_w.clamp(2, 12) as usize,
+            grid_h: grid_h.clamp(2, 12) as usize,
+        };
+        VcodeTx {
+            encoder: fountain::Encoder::new(payload, layout.packet_size(bpc) as u16, extra_repair),
+            layout,
+            bpc,
+        }
+    }
+
+    #[wasm_bindgen(js_name = packetCount)]
+    pub fn packet_count(&self) -> u32 {
+        self.encoder.packet_count() as u32
+    }
+
+    #[wasm_bindgen(js_name = frameCount)]
+    pub fn frame_count(&self) -> u32 {
+        let bc = self.layout.block_count();
+        self.encoder.packet_count().div_ceil(bc) as u32
+    }
+
+    #[wasm_bindgen(js_name = frameWidth)]
+    pub fn frame_width(&self) -> u32 {
+        self.layout.width() as u32
+    }
+
+    #[wasm_bindgen(js_name = frameHeight)]
+    pub fn frame_height(&self) -> u32 {
+        self.layout.height() as u32
+    }
+
+    /// i 番目フレームのグレースケール画素 (0=黒,255=白, 行優先, width*height)。
+    #[wasm_bindgen(js_name = frameGray)]
+    pub fn frame_gray(&self, i: u32) -> Vec<u8> {
+        let bc = self.layout.block_count();
+        let pc = self.encoder.packet_count();
+        let header = vcode::FrameHeader {
+            version: vcode::VERSION,
+            bits_per_cell: self.bpc,
+            layout: self.layout,
+            frame_seq: (i % 0x10000) as u16,
+            oti: {
+                let mut oti = [0u8; 12];
+                oti.copy_from_slice(&self.encoder.oti_bytes());
+                oti
+            },
+        };
+        let payload_len = self.layout.block_payload_len(self.bpc);
+        let blocks: Vec<Vec<u8>> = (0..bc)
+            .map(|j| {
+                let mut p = self.encoder.packet((i as usize * bc + j) % pc);
+                p.resize(payload_len, 0);
+                p
+            })
+            .collect();
+        vcode::encode_frame(&header, &blocks, 1).data
+    }
+}
+
+#[wasm_bindgen]
+pub struct VcodeScanReport {
+    detected: bool,
+    blocks_ok: u32,
+    blocks_total: u32,
+    oti: Vec<u8>,
+    packets: Vec<Vec<u8>>,
+}
+
+#[wasm_bindgen]
+impl VcodeScanReport {
+    #[wasm_bindgen(getter)]
+    pub fn detected(&self) -> bool {
+        self.detected
+    }
+    #[wasm_bindgen(getter, js_name = blocksOk)]
+    pub fn blocks_ok(&self) -> u32 {
+        self.blocks_ok
+    }
+    #[wasm_bindgen(getter, js_name = blocksTotal)]
+    pub fn blocks_total(&self) -> u32 {
+        self.blocks_total
+    }
+    #[wasm_bindgen(getter)]
+    pub fn oti(&self) -> Vec<u8> {
+        self.oti.clone()
+    }
+    #[wasm_bindgen(js_name = packetCount)]
+    pub fn packet_count(&self) -> u32 {
+        self.packets.len() as u32
+    }
+    pub fn packet(&self, i: u32) -> Vec<u8> {
+        self.packets[i as usize].clone()
+    }
+}
+
+fn vcode_fail() -> VcodeScanReport {
+    VcodeScanReport { detected: false, blocks_ok: 0, blocks_total: 0, oti: vec![], packets: vec![] }
+}
+
+fn vcode_success(result: vcode::scan::ScanResult, layout: vcode::Layout) -> VcodeScanReport {
+    let frame = result.frame;
+    let pkt_len = 4 + fountain::oti_symbol_size(&frame.header.oti) as usize;
+    let packets: Vec<Vec<u8>> = frame
+        .blocks
+        .into_iter()
+        .flatten()
+        .map(|mut p| {
+            p.truncate(pkt_len.min(p.len()));
+            p
+        })
+        .collect();
+    VcodeScanReport {
+        detected: true,
+        blocks_ok: packets.len() as u32,
+        blocks_total: layout.block_count() as u32,
+        oti: frame.header.oti.to_vec(),
+        packets,
+    }
+}
+
+fn vcode_rotate(y: &[u8], w: usize, h: usize, stride: usize, rot: u32) -> (Vec<u8>, usize, usize) {
+    let (rw, rh) = match rot {
+        90 | 270 => (h, w),
+        _ => (w, h),
+    };
+    let mut gray = vec![0u8; rw * rh];
+    for sy in 0..h {
+        let row = &y[sy * stride..sy * stride + w];
+        for sx in 0..w {
+            let (dx, dy) = match rot {
+                90 => (rw - 1 - sy, sx),
+                180 => (rw - 1 - sx, rh - 1 - sy),
+                270 => (sy, rh - 1 - sx),
+                _ => (sx, sy),
+            };
+            gray[dy * rw + dx] = row[sx];
+        }
+    }
+    (gray, rw, rh)
+}
+
+#[wasm_bindgen]
+pub struct VcodeRx {
+    last: Option<(u32, vcode::Layout, [(f32, f32); 4])>,
+}
+
+#[wasm_bindgen]
+impl VcodeRx {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> VcodeRx {
+        VcodeRx { last: None }
+    }
+
+    /// グレースケール Y プレーンから vcode をスキャンする。ブラウザでは RGBA→輝度に変換して
+    /// stride=width, rotation_deg=0 で渡せばよい。
+    pub fn scan(
+        &mut self,
+        y: &[u8],
+        width: u32,
+        height: u32,
+        stride: u32,
+        rotation_deg: u32,
+        guide_frac: f64,
+    ) -> VcodeScanReport {
+        let (w, h, stride) = (width as usize, height as usize, stride as usize);
+        if stride < w || y.len() < stride * h {
+            return vcode_fail();
+        }
+
+        if let Some((rot, layout, corners)) = self.last {
+            let (gray, rw, rh) = vcode_rotate(y, w, h, stride, rot);
+            let img = GrayImage { w: rw, h: rh, data: &gray };
+            if let Ok(result) = scan_frame_tracked(&img, &corners, layout) {
+                self.last = Some((rot, layout, result.corners));
+                return vcode_success(result, layout);
+            }
+        }
+
+        for rot in [rotation_deg % 360, (rotation_deg + 180) % 360] {
+            let (gray, rw, rh) = vcode_rotate(y, w, h, stride, rot);
+            let img = GrayImage { w: rw, h: rh, data: &gray };
+            for layout in vcode::Layout::CANDIDATES {
+                let gw = (guide_frac.clamp(0.2, 1.0) * rw as f64) as f32;
+                let gh = (gw * layout.height() as f32 / layout.width() as f32).min(rh as f32 * 0.95);
+                let cx = rw as f32 / 2.0;
+                let cy = rh as f32 / 2.0;
+                let guide = Quad {
+                    tl: (cx - gw / 2.0, cy - gh / 2.0),
+                    tr: (cx + gw / 2.0, cy - gh / 2.0),
+                    br: (cx + gw / 2.0, cy + gh / 2.0),
+                    bl: (cx - gw / 2.0, cy + gh / 2.0),
+                };
+                if let Ok(result) = scan_frame(&img, &guide, layout) {
+                    self.last = Some((rot, layout, result.corners));
+                    return vcode_success(result, layout);
+                }
+            }
+        }
+        self.last = None;
+        vcode_fail()
+    }
+}
