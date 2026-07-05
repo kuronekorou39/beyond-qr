@@ -525,7 +525,7 @@ class _VCalReceiveState extends State<_VCalReceive> {
             alignment: Alignment.center,
             child: cam == null || !cam.value.isInitialized
                 ? const CircularProgressIndicator()
-                : AspectRatio(aspectRatio: 1 / cam.value.aspectRatio, child: CameraPreview(cam)),
+                : CameraPreview(cam), // 向き対応のアスペクトは CameraPreview 内部が処理する
           ),
         ),
         Container(
