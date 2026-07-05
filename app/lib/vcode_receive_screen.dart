@@ -10,6 +10,7 @@ import 'history_screen.dart' show shareReceived;
 import 'history_store.dart';
 import 'src/rust/api/fountain.dart';
 import 'src/rust/api/vcode.dart';
+import 'vcode_view.dart';
 
 /// vcode 受信画面。camera パッケージで生 YUV フレームを取得し、
 /// Y プレーンを Rust の vcode スキャナに渡す (mobile_scanner/MLKit 不使用)。
@@ -18,9 +19,6 @@ class VcodeReceiveScreen extends StatefulWidget {
   @override
   State<VcodeReceiveScreen> createState() => _VcodeReceiveScreenState();
 }
-
-/// UI のガイド枠と Rust 側のガイド枠計算で共有する比率 (回転後画像幅に対する枠幅)
-const _guideFrac = 0.8;
 
 class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
     with WidgetsBindingObserver {
@@ -119,7 +117,7 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
         height: img.height,
         stride: y.bytesPerRow,
         rotationDeg: rotation,
-        guideFrac: _guideFrac,
+        guideFrac: kVcodeGuideFrac,
         debugDump: wantDump,
       );
       sw.stop();
@@ -369,16 +367,7 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
                 )
               : cam == null || !cam.value.isInitialized
                   ? Center(child: Text(_status))
-                  : Stack(
-                      fit: StackFit.expand,
-                      children: [
-                        CameraPreview(cam),
-                        // ガイド枠 (Rust 側の guide_frac と同じ規約で中央配置)
-                        IgnorePointer(
-                          child: CustomPaint(painter: _GuidePainter()),
-                        ),
-                      ],
-                    ),
+                  : VcodeCameraView(cam),
         ),
         Padding(
           padding: const EdgeInsets.all(8),
@@ -394,35 +383,4 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
       ],
     );
   }
-}
-
-class _GuidePainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = Colors.greenAccent
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2;
-    final gw = size.width * _guideFrac;
-    final gh = gw * 92 / 100;
-    final rect = Rect.fromCenter(
-        center: Offset(size.width / 2, size.height / 2), width: gw, height: gh);
-    canvas.drawRect(rect, paint);
-    // 四隅を強調
-    const l = 24.0;
-    final corner = Paint()
-      ..color = Colors.greenAccent
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 5;
-    for (final (dx, dy) in [(0.0, 0.0), (rect.width, 0.0), (0.0, rect.height), (rect.width, rect.height)]) {
-      final p = rect.topLeft + Offset(dx, dy);
-      final sx = dx == 0 ? 1.0 : -1.0;
-      final sy = dy == 0 ? 1.0 : -1.0;
-      canvas.drawLine(p, p + Offset(sx * l, 0), corner);
-      canvas.drawLine(p, p + Offset(0, sy * l), corner);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }

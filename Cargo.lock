@@ -13,6 +13,7 @@ name = "beyond-qr-core-wasm"
 version = "0.1.0"
 dependencies = [
  "beyond-qr-fountain",
+ "beyond-qr-vcode",
  "wasm-bindgen",
 ]
 

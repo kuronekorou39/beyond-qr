@@ -8,6 +8,7 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'src/rust/api/qr.dart';
 import 'src/rust/api/vcode.dart';
+import 'vcode_view.dart';
 
 /// 校正モード: 送信側が「ゆるい→きつい」レベルのテストパターンを表示し、
 /// 受信側が「どのレベルまで読めるか」を確認する (オフラインの人アシスト校正)。
@@ -343,7 +344,8 @@ class _VCalSendState extends State<_VCalSend> {
 
   Future<void> _rebuild() async {
     final lv = vCalLevels[_lv];
-    final tx = VcodeTx(payload: _payload, extraRepair: 4, gridW: lv.gw, gridH: lv.gh, bitsPerCell: 1);
+    // 本番 V送信 の既定と同じ 2bit (4値) で描く。校正のコードの見た目/密度を本番に一致させる。
+    final tx = VcodeTx(payload: _payload, extraRepair: 4, gridW: lv.gw, gridH: lv.gh, bitsPerCell: 2);
     final f = tx.frameGray(i: 0);
     final rgba = Uint8List(f.width * f.height * 4);
     for (var i = 0; i < f.width * f.height; i++) {
@@ -434,8 +436,9 @@ class _VCalReceiveState extends State<_VCalReceive> {
       final cams = await availableCameras();
       final back = cams.firstWhere((c) => c.lensDirection == CameraLensDirection.back,
           orElse: () => cams.first);
+      // 本番受信と同じカメラ設定 (1080p + 60fps 要求) で検出性能を揃える。
       final cam = CameraController(back, ResolutionPreset.veryHigh,
-          enableAudio: false, imageFormatGroup: ImageFormatGroup.yuv420);
+          enableAudio: false, fps: 60, imageFormatGroup: ImageFormatGroup.yuv420);
       await cam.initialize();
       _rx = VcodeRx();
       await cam.startImageStream(_onFrame);
@@ -469,7 +472,8 @@ class _VCalReceiveState extends State<_VCalReceive> {
         height: img.height,
         stride: y.bytesPerRow,
         rotationDeg: _cam?.description.sensorOrientation ?? 90,
-        guideFrac: 0.9,
+        // 本番受信と同一のスキャン範囲。校正で✅なら本番でも同じ枠で読めることを保証する。
+        guideFrac: kVcodeGuideFrac,
         debugDump: false,
       );
       if (!_active) return;
@@ -505,20 +509,11 @@ class _VCalReceiveState extends State<_VCalReceive> {
         Expanded(
           child: Container(
             color: Colors.black,
+            // 本番受信 (VcodeReceiveScreen) と同一の描画 + 緑ガイド枠。
+            // 校正で見えている枠・位置がそのまま本番受信でも成立する。
             child: cam == null || !cam.value.isInitialized
                 ? const Center(child: CircularProgressIndicator())
-                // mobile_scanner と同じく領域いっぱい (cover)。CameraPreview を領域比に合わせて
-                // 拡大しクリップする (レターボックスの小表示を避ける)。
-                : LayoutBuilder(builder: (ctx, c) {
-                    var scale = cam.value.aspectRatio * (c.maxWidth / c.maxHeight);
-                    if (scale < 1) scale = 1 / scale;
-                    return ClipRect(
-                      child: Transform.scale(
-                        scale: scale,
-                        child: Center(child: CameraPreview(cam)),
-                      ),
-                    );
-                  }),
+                : VcodeCameraView(cam),
           ),
         ),
         Container(
