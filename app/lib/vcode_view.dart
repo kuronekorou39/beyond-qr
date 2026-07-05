@@ -10,19 +10,32 @@ import 'package:flutter/material.dart';
 const double kVcodeGuideFrac = 0.8;
 
 /// カメラプレビュー + 緑ガイド枠。受信系はすべてこれを使う。
+///
+/// アスペクト比を保ったまま領域いっぱいに表示する (cover)。StackFit.expand で
+/// CameraPreview を直接引き伸ばすと縦横比が崩れる (縦潰れ) ため、領域比に合わせて
+/// 拡大しクリップする。緑枠は表示領域の中央 (= スキャン中心) に重ねる。
 class VcodeCameraView extends StatelessWidget {
   const VcodeCameraView(this.controller, {super.key});
   final CameraController controller;
 
   @override
   Widget build(BuildContext context) {
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        CameraPreview(controller),
-        IgnorePointer(child: CustomPaint(painter: VcodeGuidePainter())),
-      ],
-    );
+    return LayoutBuilder(builder: (ctx, c) {
+      var scale = controller.value.aspectRatio * (c.maxWidth / c.maxHeight);
+      if (scale < 1) scale = 1 / scale;
+      return ClipRect(
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            Transform.scale(
+              scale: scale,
+              child: Center(child: CameraPreview(controller)),
+            ),
+            IgnorePointer(child: CustomPaint(painter: VcodeGuidePainter())),
+          ],
+        ),
+      );
+    });
   }
 }
 
