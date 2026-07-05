@@ -373,12 +373,18 @@ class _VCalSendState extends State<_VCalSend> {
           child: Container(
             color: Colors.white,
             alignment: Alignment.center,
+            // 白い余白 (クワイエットゾーン) を確保: 表示エリアの 76% にコードを収める。
+            // vcode は QR と違い finder 周囲に余白が無いと端で検出に失敗しやすい。
             child: _image == null
                 ? const CircularProgressIndicator()
-                : AspectRatio(
-                    aspectRatio: _image!.width / _image!.height,
-                    child: RawImage(
-                        image: _image, fit: BoxFit.contain, filterQuality: FilterQuality.none),
+                : FractionallySizedBox(
+                    widthFactor: 0.76,
+                    heightFactor: 0.76,
+                    child: AspectRatio(
+                      aspectRatio: _image!.width / _image!.height,
+                      child: RawImage(
+                          image: _image, fit: BoxFit.contain, filterQuality: FilterQuality.none),
+                    ),
                   ),
           ),
         ),
