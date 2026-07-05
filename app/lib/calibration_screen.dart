@@ -367,59 +367,42 @@ class _VCalSendState extends State<_VCalSend> {
   @override
   Widget build(BuildContext context) {
     final lv = vCalLevels[_lv];
-    return Column(
-      children: [
-        Expanded(
-          child: Container(
-            color: Colors.white,
-            alignment: Alignment.center,
-            // 白い余白 (クワイエットゾーン) を確保: 表示エリアの 76% にコードを収める。
-            // vcode は QR と違い finder 周囲に余白が無いと端で検出に失敗しやすい。
-            child: _image == null
-                ? const CircularProgressIndicator()
-                : FractionallySizedBox(
-                    widthFactor: 0.76,
-                    heightFactor: 0.76,
-                    child: AspectRatio(
+    // 本番 vcode 送信 (vcode_send_screen) と同一レイアウト:
+    // 白背景・padding16・Expanded で中央 contain。校正で合わせた位置/サイズが本番でも
+    // 一致するように、コードの描き方を必ず揃える。レベル操作だけ下部のコンパクト行で追加。
+    return Container(
+      color: Colors.white,
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        children: [
+          Expanded(
+            child: Center(
+              child: _image == null
+                  ? const CircularProgressIndicator()
+                  : AspectRatio(
                       aspectRatio: _image!.width / _image!.height,
                       child: RawImage(
                           image: _image, fit: BoxFit.contain, filterQuality: FilterQuality.none),
                     ),
-                  ),
+            ),
           ),
-        ),
-        Container(
-          padding: const EdgeInsets.all(12),
-          color: Theme.of(context).colorScheme.surfaceContainerHighest,
-          child: Column(
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Text(lv.label, style: Theme.of(context).textTheme.titleLarge),
-              const SizedBox(height: 4),
-              Text('受信側が「読めた」と出たらこの密度はOK。ゆるい→きつい と上げて限界を探す',
-                  style: Theme.of(context).textTheme.bodySmall),
-              const SizedBox(height: 8),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  IconButton.filledTonal(
-                    onPressed: _lv > 0 ? () => _set(_lv - 1) : null,
-                    icon: const Icon(Icons.chevron_left),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                    child: Text('${_lv + 1} / ${vCalLevels.length}',
-                        style: Theme.of(context).textTheme.titleMedium),
-                  ),
-                  IconButton.filledTonal(
-                    onPressed: _lv < vCalLevels.length - 1 ? () => _set(_lv + 1) : null,
-                    icon: const Icon(Icons.chevron_right),
-                  ),
-                ],
+              IconButton(
+                onPressed: _lv > 0 ? () => _set(_lv - 1) : null,
+                icon: const Icon(Icons.chevron_left, color: Colors.black),
+              ),
+              Text('${lv.label}   (${_lv + 1}/${vCalLevels.length})',
+                  style: const TextStyle(color: Colors.black, fontSize: 15)),
+              IconButton(
+                onPressed: _lv < vCalLevels.length - 1 ? () => _set(_lv + 1) : null,
+                icon: const Icon(Icons.chevron_right, color: Colors.black),
               ),
             ],
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }
@@ -522,10 +505,20 @@ class _VCalReceiveState extends State<_VCalReceive> {
         Expanded(
           child: Container(
             color: Colors.black,
-            alignment: Alignment.center,
             child: cam == null || !cam.value.isInitialized
-                ? const CircularProgressIndicator()
-                : CameraPreview(cam), // 向き対応のアスペクトは CameraPreview 内部が処理する
+                ? const Center(child: CircularProgressIndicator())
+                // mobile_scanner と同じく領域いっぱい (cover)。CameraPreview を領域比に合わせて
+                // 拡大しクリップする (レターボックスの小表示を避ける)。
+                : LayoutBuilder(builder: (ctx, c) {
+                    var scale = cam.value.aspectRatio * (c.maxWidth / c.maxHeight);
+                    if (scale < 1) scale = 1 / scale;
+                    return ClipRect(
+                      child: Transform.scale(
+                        scale: scale,
+                        child: Center(child: CameraPreview(cam)),
+                      ),
+                    );
+                  }),
           ),
         ),
         Container(
