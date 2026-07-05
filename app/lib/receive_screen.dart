@@ -33,7 +33,10 @@ String _fmtSize(int n) {
 }
 
 class ReceiveScreen extends StatefulWidget {
-  const ReceiveScreen({super.key});
+  /// このタブが表示中で校正も開いていないとき true。false の間はカメラを解放し、
+  /// 他画面 (校正・V受信) と背面カメラを奪い合わないようにする。
+  const ReceiveScreen({super.key, this.active = true});
+  final bool active;
   @override
   State<ReceiveScreen> createState() => _ReceiveScreenState();
 }
@@ -190,6 +193,16 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
     _controller = null;
     await WakelockPlus.disable();
     if (mounted) setState(() {});
+  }
+
+  @override
+  void didUpdateWidget(ReceiveScreen old) {
+    super.didUpdateWidget(old);
+    // 非表示 / 校正表示中になったらスキャン中のカメラを解放する
+    // (ユーザー起動式なので、表示に戻っても自動再開はしない)。
+    if (old.active && !widget.active && _controller != null) {
+      _stopCamera();
+    }
   }
 
   @override

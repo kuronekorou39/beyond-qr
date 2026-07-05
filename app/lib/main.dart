@@ -48,22 +48,35 @@ class HomeShell extends StatefulWidget {
 
 class _HomeShellState extends State<HomeShell> {
   int _index = 0;
+  // 校正画面 (カメラを使う) を上に重ねている間は、下の受信タブのカメラを止める。
+  // IndexedStack は全子を生かし続けるため、明示的に active を切らないと
+  // 背面カメラを複数の画面が奪い合ってフリーズする。
+  bool _calOpen = false;
 
   /// カメラ受信はモバイルのみ。デスクトップ (Windows = PC 送信機として使用) では
   /// mobile_scanner / camera が動かないため差し替える (IndexedStack は全子を即ビルドする)。
   static final bool _hasCamera = Platform.isAndroid || Platform.isIOS;
 
-  static final _screens = <Widget>[
-    const SendScreen(),
-    _hasCamera
-        ? const ReceiveScreen()
-        : const Center(child: Text('この環境ではカメラ受信は使えません')),
-    const VcodeSendScreen(),
-    _hasCamera
-        ? const VcodeReceiveScreen()
-        : const Center(child: Text('この環境ではカメラ受信は使えません')),
-    const HistoryScreen(),
-  ];
+  /// 受信系カメラは「そのタブが選択中」かつ「校正を開いていない」ときだけ動かす。
+  List<Widget> _buildScreens() => <Widget>[
+        const SendScreen(),
+        _hasCamera
+            ? ReceiveScreen(active: _index == 1 && !_calOpen)
+            : const Center(child: Text('この環境ではカメラ受信は使えません')),
+        const VcodeSendScreen(),
+        _hasCamera
+            ? VcodeReceiveScreen(active: _index == 3 && !_calOpen)
+            : const Center(child: Text('この環境ではカメラ受信は使えません')),
+        const HistoryScreen(),
+      ];
+
+  Future<void> _openCalibration() async {
+    setState(() => _calOpen = true); // 先に受信タブのカメラを解放させる
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const CalibrationScreen()),
+    );
+    if (mounted) setState(() => _calOpen = false); // 戻ったら受信カメラを再開
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -75,13 +88,11 @@ class _HomeShellState extends State<HomeShell> {
             IconButton(
               icon: const Icon(Icons.tune),
               tooltip: '校正 (読み取り限界の確認)',
-              onPressed: () => Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => const CalibrationScreen()),
-              ),
+              onPressed: _openCalibration,
             ),
         ],
       ),
-      body: IndexedStack(index: _index, children: _screens),
+      body: IndexedStack(index: _index, children: _buildScreens()),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _index,
         onDestinationSelected: (i) => setState(() => _index = i),

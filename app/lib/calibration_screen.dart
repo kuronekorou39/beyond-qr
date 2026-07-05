@@ -432,24 +432,37 @@ class _VCalReceiveState extends State<_VCalReceive> {
   }
 
   Future<void> _initCamera() async {
-    try {
-      final cams = await availableCameras();
-      final back = cams.firstWhere((c) => c.lensDirection == CameraLensDirection.back,
-          orElse: () => cams.first);
-      // 本番受信と同じカメラ設定 (1080p + 60fps 要求) で検出性能を揃える。
-      final cam = CameraController(back, ResolutionPreset.veryHigh,
-          enableAudio: false, fps: 60, imageFormatGroup: ImageFormatGroup.yuv420);
-      await cam.initialize();
-      _rx = VcodeRx();
-      await cam.startImageStream(_onFrame);
-      await WakelockPlus.enable();
-      if (mounted) {
+    // 直前まで受信タブがカメラを掴んでいる場合があるので、解放待ちで数回リトライ。
+    for (var attempt = 0; attempt < 6; attempt++) {
+      if (!mounted) return;
+      CameraController? cam;
+      try {
+        final cams = await availableCameras();
+        final back = cams.firstWhere((c) => c.lensDirection == CameraLensDirection.back,
+            orElse: () => cams.first);
+        // 本番受信と同じカメラ設定 (1080p + 60fps 要求) で検出性能を揃える。
+        cam = CameraController(back, ResolutionPreset.veryHigh,
+            enableAudio: false, fps: 60, imageFormatGroup: ImageFormatGroup.yuv420);
+        await cam.initialize();
+        if (!mounted) {
+          await cam.dispose();
+          return;
+        }
+        _rx = VcodeRx();
+        await cam.startImageStream(_onFrame);
+        await WakelockPlus.enable();
         setState(() {
           _cam = cam;
           _active = true;
         });
+        return;
+      } catch (_) {
+        try {
+          await cam?.dispose();
+        } catch (_) {}
+        if (attempt < 5) await Future.delayed(const Duration(milliseconds: 300));
       }
-    } catch (_) {}
+    }
   }
 
   int _levelFromBlocks(int blocks) {

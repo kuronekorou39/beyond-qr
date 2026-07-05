@@ -15,7 +15,10 @@ import 'vcode_view.dart';
 /// vcode 受信画面。camera パッケージで生 YUV フレームを取得し、
 /// Y プレーンを Rust の vcode スキャナに渡す (mobile_scanner/MLKit 不使用)。
 class VcodeReceiveScreen extends StatefulWidget {
-  const VcodeReceiveScreen({super.key});
+  /// このタブが表示中で校正も開いていない = カメラを動かしてよいとき true。
+  /// false の間は背面カメラを解放し、他画面 (校正など) と奪い合わないようにする。
+  const VcodeReceiveScreen({super.key, this.active = true});
+  final bool active;
   @override
   State<VcodeReceiveScreen> createState() => _VcodeReceiveScreenState();
 }
@@ -52,37 +55,68 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _initCamera();
+    if (widget.active) _initCamera();
+  }
+
+  @override
+  void didUpdateWidget(VcodeReceiveScreen old) {
+    super.didUpdateWidget(old);
+    if (widget.active == old.active) return;
+    if (widget.active) {
+      // 再表示: 未完了ならカメラを再取得してスキャン再開
+      if (_payload == null && _cam == null) _initCamera();
+    } else {
+      // 非表示 / 校正表示中: カメラを解放
+      _stopCamera();
+    }
   }
 
   Future<void> _initCamera() async {
-    try {
-      final cams = await availableCameras();
-      final back = cams.firstWhere(
-          (c) => c.lensDirection == CameraLensDirection.back,
-          orElse: () => cams.first);
-      final cam = CameraController(
-        back,
-        // 1080p: 高密度レイアウト (7x6) はセル解像度が必要 (720p だと ~4px/セルで限界)
-        ResolutionPreset.veryHigh,
-        enableAudio: false,
-        // 60fps 要求 (対応外の端末では無視される。実配信レートは統計で確認)
-        fps: 60,
-        imageFormatGroup: ImageFormatGroup.yuv420,
-      );
-      await cam.initialize();
-      _rx = VcodeRx();
-      _camStarted = DateTime.now();
-      _camCallbacks = 0;
-      await cam.startImageStream(_onFrame);
-      await WakelockPlus.enable();
-      setState(() {
-        _cam = cam;
-        _active = true;
-        _status = 'スキャン中';
-      });
-    } catch (e) {
-      setState(() => _status = 'カメラ初期化失敗: $e');
+    // 直前まで校正/別タブがカメラを掴んでいると初回 initialize が失敗しうるので、
+    // 解放待ちのため数回リトライする。
+    for (var attempt = 0; attempt < 6; attempt++) {
+      if (!mounted || !widget.active) return;
+      CameraController? cam;
+      try {
+        final cams = await availableCameras();
+        final back = cams.firstWhere(
+            (c) => c.lensDirection == CameraLensDirection.back,
+            orElse: () => cams.first);
+        cam = CameraController(
+          back,
+          // 1080p: 高密度レイアウト (7x6) はセル解像度が必要 (720p だと ~4px/セルで限界)
+          ResolutionPreset.veryHigh,
+          enableAudio: false,
+          // 60fps 要求 (対応外の端末では無視される。実配信レートは統計で確認)
+          fps: 60,
+          imageFormatGroup: ImageFormatGroup.yuv420,
+        );
+        await cam.initialize();
+        if (!mounted || !widget.active) {
+          await cam.dispose();
+          return;
+        }
+        _rx = VcodeRx();
+        _camStarted = DateTime.now();
+        _camCallbacks = 0;
+        await cam.startImageStream(_onFrame);
+        await WakelockPlus.enable();
+        setState(() {
+          _cam = cam;
+          _active = true;
+          _status = 'スキャン中';
+        });
+        return;
+      } catch (e) {
+        try {
+          await cam?.dispose();
+        } catch (_) {}
+        if (attempt == 5) {
+          if (mounted) setState(() => _status = 'カメラ初期化失敗: $e');
+        } else {
+          await Future.delayed(const Duration(milliseconds: 300));
+        }
+      }
     }
   }
 
