@@ -96,7 +96,7 @@ class _CalibrationScreenState extends State<CalibrationScreen> {
           ),
         ),
       ),
-      body: body,
+      body: SafeArea(top: false, child: body),
     );
   }
 }
@@ -110,12 +110,11 @@ class VCalLevel {
   int get blocks => gw * gh;
 }
 
+// vcode スキャナの CANDIDATES は 5×4 / 7×6 のみ検出できるため、校正もこの2択に絞る
+// (他の格子はデコーダが認識できず「読めない」と誤判定されてしまう)。
 const vCalLevels = <VCalLevel>[
-  VCalLevel('Lv1  3×2 特ゆる', 3, 2),
-  VCalLevel('Lv2  4×3', 4, 3),
-  VCalLevel('Lv3  5×4 標準', 5, 4),
-  VCalLevel('Lv4  6×5', 6, 5),
-  VCalLevel('Lv5  7×6 高密度', 7, 6),
+  VCalLevel('Lv1  5×4 標準', 5, 4),
+  VCalLevel('Lv2  7×6 高密度', 7, 6),
 ];
 
 // ============ 送信 (テストパターン表示) ============
@@ -332,7 +331,7 @@ class _VCalSend extends StatefulWidget {
 }
 
 class _VCalSendState extends State<_VCalSend> {
-  int _lv = 2; // 既定は標準(5×4)
+  int _lv = 0; // 既定は 5×4 (ゆるい方から)
   ui.Image? _image;
   final _payload = Uint8List.fromList(utf8.encode('VCAL-CALIBRATION-PATTERN'));
 
@@ -520,7 +519,7 @@ class _VCalReceiveState extends State<_VCalReceive> {
             alignment: Alignment.center,
             child: cam == null || !cam.value.isInitialized
                 ? const CircularProgressIndicator()
-                : AspectRatio(aspectRatio: cam.value.aspectRatio, child: CameraPreview(cam)),
+                : AspectRatio(aspectRatio: 1 / cam.value.aspectRatio, child: CameraPreview(cam)),
           ),
         ),
         Container(
