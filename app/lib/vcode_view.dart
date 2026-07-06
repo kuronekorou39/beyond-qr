@@ -31,7 +31,8 @@ class VcodeCameraView extends StatelessWidget {
               scale: scale,
               child: Center(child: CameraPreview(controller)),
             ),
-            IgnorePointer(child: CustomPaint(painter: VcodeGuidePainter())),
+            // vcode の枠 (guideFrac 準拠, 縦横比 0.92 = ブロック格子形状)
+            const ScanGuideOverlay(widthFrac: kVcodeGuideFrac, aspect: 0.92),
           ],
         ),
       );
@@ -39,16 +40,39 @@ class VcodeCameraView extends StatelessWidget {
   }
 }
 
-/// 中央に vcode の枠 (guideFrac 準拠) を描く。Rust 側の guide_frac と同一規約。
-class VcodeGuidePainter extends CustomPainter {
+/// スキャンの照準となる緑の枠 (四隅強調)。QR/vcode 受信・校正すべてで共用し、
+/// 「枠に収める」という操作感を統一する。
+class ScanGuideOverlay extends StatelessWidget {
+  const ScanGuideOverlay({super.key, this.widthFrac = 0.8, this.aspect = 1.0});
+
+  /// 表示幅に対する枠の幅の比率
+  final double widthFrac;
+
+  /// 枠の縦横比 (高さ / 幅)
+  final double aspect;
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: CustomPaint(
+          painter: _ScanGuidePainter(widthFrac: widthFrac, aspect: aspect)),
+    );
+  }
+}
+
+class _ScanGuidePainter extends CustomPainter {
+  _ScanGuidePainter({required this.widthFrac, required this.aspect});
+  final double widthFrac;
+  final double aspect;
+
   @override
   void paint(Canvas canvas, Size size) {
     final paint = Paint()
       ..color = Colors.greenAccent
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2;
-    final gw = size.width * kVcodeGuideFrac;
-    final gh = gw * 92 / 100;
+    final gw = size.width * widthFrac;
+    final gh = gw * aspect;
     final rect = Rect.fromCenter(
         center: Offset(size.width / 2, size.height / 2), width: gw, height: gh);
     canvas.drawRect(rect, paint);
@@ -73,5 +97,6 @@ class VcodeGuidePainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+  bool shouldRepaint(covariant _ScanGuidePainter old) =>
+      old.widthFrac != widthFrac || old.aspect != aspect;
 }

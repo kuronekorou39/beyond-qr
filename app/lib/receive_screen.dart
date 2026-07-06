@@ -6,6 +6,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import 'history_store.dart';
 import 'protocol.dart';
 import 'src/rust/api/fountain.dart';
+import 'vcode_view.dart';
 
 /// mobile_scanner の rawDecodedBytes (sealed) から実バイト列を取り出す。
 Uint8List? _decodedBytes(BarcodeBytes? b) {
@@ -62,6 +63,12 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
 
   ({String name, String type, int size, String path})? _result;
   String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.active) _startCamera();
+  }
 
   Future<void> _startCamera() async {
     await WakelockPlus.enable();
@@ -198,9 +205,13 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
   @override
   void didUpdateWidget(ReceiveScreen old) {
     super.didUpdateWidget(old);
-    // 非表示 / 校正表示中になったらスキャン中のカメラを解放する
-    // (ユーザー起動式なので、表示に戻っても自動再開はしない)。
-    if (old.active && !widget.active && _controller != null) {
+    if (!old.active && widget.active) {
+      // 表示に戻った: 結果/エラー表示中でなければ自動でスキャン再開 (vcode 受信と統一)
+      if (_controller == null && _result == null && _error == null) {
+        _startCamera();
+      }
+    } else if (old.active && !widget.active && _controller != null) {
+      // 非表示 / 校正表示中になったらカメラを解放し、奪い合いを防ぐ
       _stopCamera();
     }
   }
@@ -244,7 +255,15 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
     final pct = total > 0 ? (done / total) : 0.0;
     return Column(
       children: [
-        Expanded(child: MobileScanner(controller: _controller!, onDetect: _onDetect)),
+        Expanded(
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              MobileScanner(controller: _controller!, onDetect: _onDetect),
+              const ScanGuideOverlay(),
+            ],
+          ),
+        ),
         Padding(
           padding: const EdgeInsets.all(12),
           child: Column(

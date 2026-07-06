@@ -275,7 +275,15 @@ class _CalReceiveState extends State<_CalReceive> {
     final best = _readable.isEmpty ? -1 : _readable.reduce((a, b) => a > b ? a : b);
     return Column(
       children: [
-        Expanded(child: MobileScanner(controller: _controller, onDetect: _onDetect)),
+        Expanded(
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              MobileScanner(controller: _controller, onDetect: _onDetect),
+              const ScanGuideOverlay(),
+            ],
+          ),
+        ),
         Container(
           padding: const EdgeInsets.all(12),
           color: Theme.of(context).colorScheme.surfaceContainerHighest,
