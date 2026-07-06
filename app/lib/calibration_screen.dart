@@ -279,7 +279,9 @@ class _CalReceiveState extends State<_CalReceive> {
           child: Stack(
             fit: StackFit.expand,
             children: [
-              MobileScanner(controller: _controller, onDetect: _onDetect),
+              // 拡大率を vcode 側 (幅基準) と揃える
+              MobileScanner(
+                  controller: _controller, onDetect: _onDetect, fit: BoxFit.fitWidth),
               const ScanGuideOverlay(),
             ],
           ),

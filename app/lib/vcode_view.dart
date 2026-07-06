@@ -21,15 +21,23 @@ class VcodeCameraView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(builder: (ctx, c) {
-      var scale = controller.value.aspectRatio * (c.maxWidth / c.maxHeight);
-      if (scale < 1) scale = 1 / scale;
+      // 拡大率を「表示幅」だけで決める (幅いっぱい・アスペクト維持・縦のはみ出しは
+      // クリップ)。cover と違い表示領域の縦横比に依存しないので、下部バーの高さが
+      // 異なる各受信/校正画面でも 4 つすべて同じ拡大率になる。
+      // CameraPreview は縦表示で 1/aspectRatio の縦横比なので、
+      // 幅=maxWidth のとき高さ=maxWidth*aspectRatio (歪みなし)。
+      final ar = controller.value.aspectRatio;
       return ClipRect(
         child: Stack(
           fit: StackFit.expand,
           children: [
-            Transform.scale(
-              scale: scale,
-              child: Center(child: CameraPreview(controller)),
+            OverflowBox(
+              maxHeight: double.infinity,
+              child: SizedBox(
+                width: c.maxWidth,
+                height: c.maxWidth * ar,
+                child: CameraPreview(controller),
+              ),
             ),
             // vcode の枠 (guideFrac 準拠, 縦横比 0.92 = ブロック格子形状)
             const ScanGuideOverlay(widthFrac: kVcodeGuideFrac, aspect: 0.92),
