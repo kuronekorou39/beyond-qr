@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:camera/camera.dart';
@@ -28,6 +29,8 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
   CameraController? _cam;
   bool _busy = false;
   bool _active = false;
+  bool _camBusy = false; // カメラ初期化/再初期化の多重実行ガード
+  Timer? _watchdog; // プレビューが灰色 (フレーム途絶) になったら作り直す
   VcodeRx? _rx;
 
   FountainDecoder? _dec;
@@ -56,6 +59,30 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     if (widget.active) _initCamera();
+    // フレームが一定時間途絶えたらカメラを作り直す (校正からの復帰レースや
+    // 一時的なカメラ喪失で灰色のまま固まるのを自己修復する)。
+    _watchdog =
+        Timer.periodic(const Duration(seconds: 1), (_) => _checkStale());
+  }
+
+  void _checkStale() {
+    if (!mounted || !widget.active || _payload != null || _camBusy) return;
+    final cam = _cam;
+    if (cam == null) {
+      _initCamera(); // active なのにカメラが無い → 再取得
+      return;
+    }
+    if (!cam.value.isInitialized) return;
+    final ref = _lastCallbackAt ?? _camStarted;
+    if (ref != null && DateTime.now().difference(ref).inMilliseconds > 2000) {
+      _reinit(); // フレームが 2 秒途絶 = 灰色 → 作り直す
+    }
+  }
+
+  Future<void> _reinit() async {
+    if (_camBusy) return;
+    await _stopCamera();
+    if (mounted && widget.active && _payload == null) await _initCamera();
   }
 
   @override
@@ -72,6 +99,16 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
   }
 
   Future<void> _initCamera() async {
+    if (_camBusy) return;
+    _camBusy = true;
+    try {
+      await _initCameraInner();
+    } finally {
+      _camBusy = false;
+    }
+  }
+
+  Future<void> _initCameraInner() async {
     // 直前まで校正/別タブがカメラを掴んでいると初回 initialize が失敗しうるので、
     // 解放待ちのため数回リトライする。
     for (var attempt = 0; attempt < 6; attempt++) {
@@ -308,6 +345,7 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
 
   @override
   void dispose() {
+    _watchdog?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _stopCamera();
     super.dispose();

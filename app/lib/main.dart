@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
@@ -75,6 +76,9 @@ class _HomeShellState extends State<HomeShell> {
     await Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => const CalibrationScreen()),
     );
+    // 校正カメラの解放 (非同期 dispose) が終わるのを少し待ってから受信を再開する。
+    // 早すぎると同じ背面カメラを一瞬奪い合い、受信プレビューが灰色になる。
+    await Future.delayed(const Duration(milliseconds: 500));
     if (mounted) setState(() => _calOpen = false); // 戻ったら受信カメラを再開
   }
 
