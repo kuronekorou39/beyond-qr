@@ -1,6 +1,6 @@
 // beyond-qr PWA Service Worker: アプリシェル + WASM をキャッシュしてオフライン動作させる。
 // バージョンを上げるとキャッシュを更新する。
-const CACHE = "beyond-qr-pwa-v3";
+const CACHE = "beyond-qr-pwa-v4";
 const ASSETS = [
   "./",
   "./index.html",
@@ -8,6 +8,7 @@ const ASSETS = [
   "./sender.js",
   "./receiver.js",
   "./vcode.js",
+  "./calibration.js",
   "./protocol.js",
   "./qr_util.js",
   "./vendor/qrcode.js",

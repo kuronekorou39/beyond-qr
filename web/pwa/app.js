@@ -5,6 +5,7 @@ import init, { FountainEncoder, FountainDecoder } from "./pkg/beyond_qr_core_was
 import { Sender } from "./sender.js";
 import { Receiver } from "./receiver.js";
 import { VcodeSender, VcodeReceiver } from "./vcode.js";
+import { setupCalibration } from "./calibration.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -29,13 +30,36 @@ function selfTest() {
 }
 
 // ---- タブ ----
-const PANES = { send: "paneSend", recv: "paneRecv", vsend: "paneVSend", vrecv: "paneVRecv" };
-const TABS = { send: "tabSend", recv: "tabRecv", vsend: "tabVSend", vrecv: "tabVRecv" };
+const PANES = { send: "paneSend", recv: "paneRecv", vsend: "paneVSend", vrecv: "paneVRecv", cal: "paneCal" };
+const TABS = { send: "tabSend", recv: "tabRecv", vsend: "tabVSend", vrecv: "tabVRecv", cal: "tabCal" };
 function showPane(which) {
   for (const [k, id] of Object.entries(PANES)) $(id).classList.toggle("active", k === which);
   for (const [k, id] of Object.entries(TABS)) $(id).classList.toggle("active", k === which);
+  if (which !== "cal") calibration.stop(); // 校正タブを離れたらカメラ/表示を止める
 }
 for (const k of Object.keys(TABS)) $(TABS[k]).addEventListener("click", () => showPane(k));
+
+// ---- 校正 ----
+const calibration = setupCalibration({
+  kindBtns: Array.from(document.querySelectorAll("#calKind button")),
+  modeBtns: Array.from(document.querySelectorAll("#calMode button")),
+  sendView: $("calSendView"),
+  recvView: $("calRecvView"),
+  showBtn: $("calShow"),
+  stage: $("calStage"),
+  canvas: $("calCanvas"),
+  label: $("calLabel"),
+  prev: $("calPrev"),
+  next: $("calNext"),
+  close: $("calClose"),
+  recvStart: $("calRecvStart"),
+  recvStop: $("calRecvStop"),
+  recvReset: $("calRecvReset"),
+  video: $("calVideo"),
+  chips: $("calChips"),
+  best: $("calBest"),
+  blocks: $("calBlocks"),
+});
 
 // ---- 送信 (QR / vcode 共用ステージ) ----
 let activeSender = null;
@@ -57,8 +81,13 @@ function fitTxCanvas() {
 window.addEventListener("resize", fitTxCanvas);
 
 $("txStart").addEventListener("click", async () => {
-  const file = $("txFile").files[0];
-  if (!file) { $("txInfo").textContent = "ファイルを選択してください"; return; }
+  let file = $("txFile").files[0];
+  if (!file) {
+    // ファイル未選択ならテキストを送信
+    const text = $("txText").value;
+    if (!text) { $("txInfo").textContent = "ファイルを選択するかテキストを入力してください"; return; }
+    file = new File([new TextEncoder().encode(text)], "message.txt", { type: "text/plain;charset=utf-8" });
+  }
   const grid = $("txGrid").value;
   const ec = $("txEc").value;
   const fps = Math.max(2, Math.min(30, parseInt($("txFps").value) || 10));
@@ -81,7 +110,13 @@ $("txStop").addEventListener("click", () => {
 // ---- V送信 (vcode) ----
 $("vtxStart").addEventListener("click", async () => {
   const file = $("vtxFile").files[0];
-  if (!file) { $("vtxInfo").textContent = "ファイルを選択してください"; return; }
+  let source = file;
+  if (!source) {
+    // ファイル未選択ならテキストを送信 (VcodeSender は Uint8Array を受け付ける)
+    const text = $("vtxText").value;
+    if (!text) { $("vtxInfo").textContent = "ファイルを選択するかテキストを入力してください"; return; }
+    source = new TextEncoder().encode(text);
+  }
   const grid = $("vtxGrid").value;
   const bpc = parseInt($("vtxBpc").value) || 2;
   const fps = Math.max(2, Math.min(30, parseInt($("vtxFps").value) || 12));
@@ -90,7 +125,7 @@ $("vtxStart").addEventListener("click", async () => {
   $("txStage").style.display = "flex";
   activeSender = vcodeSender;
   try {
-    await vcodeSender.start(file, grid, bpc, fps);
+    await vcodeSender.start(source, grid, bpc, fps);
   } catch (e) {
     $("txStage").style.display = "none";
     $("vtxInfo").textContent = "V送信エラー: " + (e && e.message ? e.message : e);

@@ -130,7 +130,7 @@ export class VcodeReceiver {
     this.frames++;
     let report;
     try {
-      report = this.rx.scan(gray, target, target, target, 0, 0.9);
+      report = this.rx.scan(gray, target, target, target, 0, 0.8);
     } catch (_) { return; }
     if (report.detected) {
       this.detected++;
