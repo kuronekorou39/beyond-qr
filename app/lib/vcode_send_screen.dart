@@ -89,7 +89,7 @@ class _VcodeSendScreenState extends State<VcodeSendScreen> {
       setState(() => _status = 'ペイロードが空です');
       return;
     }
-    final packetSize = _bpc == 2 ? 94 : 44;
+    final packetSize = _bpc == 2 ? 92 : 42;
     final sourcePackets = (payload.length / packetSize).ceil();
     final gridParts = _grid.split('x');
     final tx = VcodeTx(

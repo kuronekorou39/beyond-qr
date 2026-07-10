@@ -4,16 +4,20 @@
 //! 画面→カメラの動画ストリーミング専用に再設計したもの。
 //!
 //! 設計の柱:
-//!   - フレームは独立した「ブロック」の格子。各ブロックが RaptorQ パケット 1 個 + CRC-16 を持ち、
+//!   - フレームは独立した「ブロック」の格子。各ブロックが RaptorQ パケット 1 個 + CRC-32 を持ち、
 //!     部分的に壊れたフレームからも読めたブロックだけ回収できる (全か無かをやめる)
 //!   - 機能パターンは四隅マーカー + 上下ストリップのみ (面積 ~12%、QR の機能パターン+EC より小さい)
 //!   - フレーム内 EC は持たない。フレーム欠落・ブロック欠落は上位の fountain (RaptorQ) が吸収する
 //!   - v0 は 1 bit/セル (白黒)。ヘッダに bits_per_cell を持ち、将来の輝度多値化 (2bit) に備える
 //!
 //! フレーム構造 (セル座標、デフォルトレイアウト 100x92):
-//!   - 上ストリップ (行 0..6): 両端に 6x6 コーナーマーカー、間にヘッダ (22 byte + CRC を 3 コピー)
-//!   - データ領域 (行 6..86): 20x20 セルのブロックが 5x4 = 20 個。ブロック = 48 byte payload + CRC-16
+//!   - 上ストリップ (行 0..6): 両端に 6x6 コーナーマーカー、間にヘッダ (24 byte、CRC-32 込み) のコピー
+//!   - データ領域 (行 6..86): 20x20 セルのブロックが 5x4 = 20 個。ブロック = 46 byte payload + CRC-32
 //!   - 下ストリップ (行 86..92): 両端にコーナーマーカー、間に市松の較正/タイミングパターン
+//!
+//! v1 でブロック/ヘッダの CRC を 16→32 bit に拡張した。サンプリングオフセットの
+//! リトライ (25 通り) x 長時間受信では CRC-16 の偽陽性 (1/65536) が現実に発生し、
+//! ゴミパケットが RaptorQ を汚染して復元結果全体を壊すため。
 //!
 //! この v0 デコーダは「理想チャネル」(スケール整数倍・歪みなしのビットマップ) を仮定する。
 //! 実カメラ画像からの検出・射影補正・サンプリングは次段で別モジュールとして実装する。
@@ -26,21 +30,21 @@ pub const STRIP_H: usize = 6;
 pub const CORNER: usize = 6;
 /// ヘッダ先頭のマジックバイト
 pub const MAGIC: u8 = 0xB9;
-/// ヘッダのシリアライズ長 (CRC-16 込み)
-pub const HEADER_LEN: usize = 22;
-/// フォーマットバージョン
-pub const VERSION: u8 = 0;
+/// ヘッダのシリアライズ長 (CRC-32 込み)
+pub const HEADER_LEN: usize = 24;
+/// フォーマットバージョン (v1: CRC を 16→32 bit 化。v0 とは非互換)
+pub const VERSION: u8 = 1;
 
-/// CRC-16/CCITT-FALSE (init=0xFFFF, poly=0x1021)
-pub fn crc16(data: &[u8]) -> u16 {
-    let mut crc: u16 = 0xFFFF;
+/// CRC-32/ISO-HDLC (init=0xFFFFFFFF, poly=0xEDB88320 反転形, xorout=0xFFFFFFFF)
+pub fn crc32(data: &[u8]) -> u32 {
+    let mut crc: u32 = 0xFFFF_FFFF;
     for &b in data {
-        crc ^= (b as u16) << 8;
+        crc ^= b as u32;
         for _ in 0..8 {
-            crc = if crc & 0x8000 != 0 { (crc << 1) ^ 0x1021 } else { crc << 1 };
+            crc = if crc & 1 != 0 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
         }
     }
-    crc
+    !crc
 }
 
 /// ブロック格子のレイアウト。ヘッダに載るのでデコーダは事前知識なしで復元できる。
@@ -82,9 +86,9 @@ impl Layout {
         self.block * self.block * bpc as usize / 8
     }
 
-    /// CRC-16 を除いたブロックペイロード長 (= シリアライズ済み RaptorQ パケットがそのまま入る)
+    /// CRC-32 を除いたブロックペイロード長 (= シリアライズ済み RaptorQ パケットがそのまま入る)
     pub fn block_payload_len(&self, bpc: u8) -> usize {
-        self.block_bytes(bpc) - 2
+        self.block_bytes(bpc) - 4
     }
 
     /// このレイアウトに合わせる場合の RaptorQ packet_size
@@ -124,18 +128,18 @@ impl FrameHeader {
         buf[5] = self.layout.grid_h as u8;
         buf[6..8].copy_from_slice(&self.frame_seq.to_le_bytes());
         buf[8..20].copy_from_slice(&self.oti);
-        let crc = crc16(&buf[..20]);
-        buf[20..22].copy_from_slice(&crc.to_be_bytes());
+        let crc = crc32(&buf[..20]);
+        buf[20..24].copy_from_slice(&crc.to_be_bytes());
         buf
     }
 
-    /// magic と CRC が一致しなければ None
+    /// magic・version・CRC が一致しなければ None
     pub fn deserialize(buf: &[u8]) -> Option<Self> {
-        if buf.len() < HEADER_LEN || buf[0] != MAGIC {
+        if buf.len() < HEADER_LEN || buf[0] != MAGIC || buf[1] != VERSION {
             return None;
         }
-        let crc_stored = u16::from_be_bytes([buf[20], buf[21]]);
-        if crc16(&buf[..20]) != crc_stored {
+        let crc_stored = u32::from_be_bytes([buf[20], buf[21], buf[22], buf[23]]);
+        if crc32(&buf[..20]) != crc_stored {
             return None;
         }
         Some(Self {
@@ -343,7 +347,7 @@ pub fn encode_frame(header: &FrameHeader, blocks: &[Vec<u8>], scale: usize) -> B
         }
     }
 
-    // データブロック: payload + CRC-16 を行優先で敷き詰める。
+    // データブロック: payload + CRC-32 を行優先で敷き詰める。
     // bpc=1: 1 セル 1 ビット (白黒)。bpc=2: 1 セル 2 ビット (輝度 4 値、MSB-first)。
     // 構造セル (コーナー/ヘッダ/較正) は bpc に関わらず白黒のまま。
     let bpc = header.bits_per_cell;
@@ -352,7 +356,7 @@ pub fn encode_frame(header: &FrameHeader, blocks: &[Vec<u8>], scale: usize) -> B
         let content: Vec<u8> = if bi < blocks.len() {
             assert_eq!(blocks[bi].len(), layout.block_payload_len(bpc), "ペイロード長不一致");
             let mut v = blocks[bi].clone();
-            v.extend_from_slice(&crc16(&blocks[bi]).to_be_bytes());
+            v.extend_from_slice(&crc32(&blocks[bi]).to_be_bytes());
             v
         } else {
             vec![0u8; layout.block_bytes(bpc)]
@@ -450,7 +454,7 @@ pub(crate) fn decode_from_sampler(
             }
             let bytes = bits_to_bytes(&bits);
             let (payload, crc) = bytes.split_at(layout.block_payload_len(bpc));
-            if crc16(payload) == u16::from_be_bytes([crc[0], crc[1]]) {
+            if crc32(payload) == u32::from_be_bytes([crc[0], crc[1], crc[2], crc[3]]) {
                 Some(payload.to_vec())
             } else {
                 None
@@ -459,6 +463,29 @@ pub(crate) fn decode_from_sampler(
         .collect();
 
     Ok(DecodedFrame { header, blocks })
+}
+
+/// 送信ペイロード先頭に CRC-32 を付与する (エンドツーエンド検証用)。
+/// ブロック CRC をすり抜けたゴミパケットが RaptorQ を汚染した場合に、
+/// 壊れた復元結果を保存してしまう事故を受信完了時に検出する最終防衛線。
+pub fn wrap_payload(data: &[u8]) -> Vec<u8> {
+    let mut v = Vec::with_capacity(4 + data.len());
+    v.extend_from_slice(&crc32(data).to_be_bytes());
+    v.extend_from_slice(data);
+    v
+}
+
+/// wrap_payload の逆。CRC が一致しなければ None (= 復元結果が破損している)。
+pub fn unwrap_payload(buf: &[u8]) -> Option<Vec<u8>> {
+    if buf.len() < 4 {
+        return None;
+    }
+    let (crc, data) = buf.split_at(4);
+    if crc32(data) == u32::from_be_bytes([crc[0], crc[1], crc[2], crc[3]]) {
+        Some(data.to_vec())
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -487,9 +514,21 @@ mod tests {
     }
 
     #[test]
-    fn crc16_known_vector() {
-        // CRC-16/CCITT-FALSE の標準テストベクタ
-        assert_eq!(crc16(b"123456789"), 0x29B1);
+    fn crc32_known_vector() {
+        // CRC-32/ISO-HDLC の標準テストベクタ
+        assert_eq!(crc32(b"123456789"), 0xCBF43926);
+    }
+
+    #[test]
+    fn payload_wrap_roundtrip() {
+        let data = b"hello vcode".to_vec();
+        let wrapped = wrap_payload(&data);
+        assert_eq!(wrapped.len(), data.len() + 4);
+        assert_eq!(unwrap_payload(&wrapped), Some(data.clone()));
+        // 1 バイト壊すと検出される
+        let mut bad = wrapped.clone();
+        bad[7] ^= 0x01;
+        assert_eq!(unwrap_payload(&bad), None);
     }
 
     #[test]
@@ -509,9 +548,9 @@ mod tests {
         assert_eq!((l.width(), l.height()), (100, 92));
         assert_eq!(l.block_count(), 20);
         assert_eq!(l.block_bytes(1), 50);
-        assert_eq!(l.block_payload_len(1), 48);
-        assert_eq!(l.packet_size(1), 44);
-        // ヘッダ領域 = 5 * (100-12) = 440 セル → 22byte*8=176bit が 2 コピー (+88 セル余り)
+        assert_eq!(l.block_payload_len(1), 46);
+        assert_eq!(l.packet_size(1), 42);
+        // ヘッダ領域 = 5 * (100-12) = 440 セル → 24byte*8=192bit が 2 コピー (+56 セル余り)
         assert_eq!(header_cells(l.width()).count(), 440);
     }
 
@@ -529,11 +568,11 @@ mod tests {
 
     #[test]
     fn frame_roundtrip_2bpc() {
-        // 輝度 4 値 (2bit/セル): ブロック容量が 2 倍 (payload 98B, packet 94B) になる
+        // 輝度 4 値 (2bit/セル): ブロック容量が 2 倍 (payload 96B, packet 92B) になる
         let l = Layout::V0;
         assert_eq!(l.block_bytes(2), 100);
-        assert_eq!(l.block_payload_len(2), 98);
-        assert_eq!(l.packet_size(2), 94);
+        assert_eq!(l.block_payload_len(2), 96);
+        assert_eq!(l.packet_size(2), 92);
 
         let mut header = test_header(12);
         header.bits_per_cell = 2;

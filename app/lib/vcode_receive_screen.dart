@@ -47,6 +47,7 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
   int _framesTracked = 0;
   int _blocksOk = 0;
   int _packetsAdded = 0;
+  int _integrityFails = 0; // エンドツーエンド CRC 不一致で受信をやり直した回数
   int _lastScanMs = 0;
   int _scanMsSum = 0;
   int _scanCount = 0;
@@ -221,7 +222,17 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
             'pkts=$_packetsAdded scan=${_lastScanMs}ms '
             'tracked=${report.tracked} done=$done');
         if (done) {
-          _onComplete(_dec!.payload()!);
+          // エンドツーエンド CRC-32 検証。不一致 = ゴミパケットが RaptorQ を
+          // 汚染して復元結果が破損 → デコーダを捨てて受信をやり直す
+          final payload = vcodeUnwrapPayload(payload: _dec!.payload()!);
+          if (payload == null) {
+            _integrityFails++;
+            debugPrint('[vcode-rx] 整合性エラー: 復元結果が破損 '
+                '($_integrityFails 回目)。デコーダを再作成して受信続行');
+            _dec = null;
+            return;
+          }
+          _onComplete(payload);
           return;
         }
       } else if (_framesSeen % 30 == 0) {
@@ -252,6 +263,14 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
     if (b.length > 7 && b[0] == 0x89 && b[1] == 0x50) return ('png', 'image/png');
     if (b.length > 11 && b[8] == 0x57 && b[9] == 0x45 && b[10] == 0x42 && b[11] == 0x50) {
       return ('webp', 'image/webp');
+    }
+    // ISO-BMFF (オフセット 4 に 'ftyp'): HEIC/AVIF (iOS 写真の既定形式)
+    if (b.length > 11 && b[4] == 0x66 && b[5] == 0x74 && b[6] == 0x79 && b[7] == 0x70) {
+      final brand = String.fromCharCodes(b.sublist(8, 12));
+      if (const {'heic', 'heix', 'hevc', 'heim', 'heis', 'mif1', 'msf1'}.contains(brand)) {
+        return ('heic', 'image/heic');
+      }
+      if (brand == 'avif' || brand == 'avis') return ('avif', 'image/avif');
     }
     if (b.length > 3 && b[0] == 0x25 && b[1] == 0x50 && b[2] == 0x44 && b[3] == 0x46) {
       return ('pdf', 'application/pdf');
@@ -329,6 +348,7 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
       _framesTracked = 0;
       _blocksOk = 0;
       _packetsAdded = 0;
+      _integrityFails = 0;
       _scanMsSum = 0;
       _scanCount = 0;
       _firstDetected = null;
@@ -364,6 +384,7 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
       ('カメラ実効fps', _camFps.toStringAsFixed(1)),
       ('回収ブロック', '$_blocksOk (部分回収込み)'),
       ('投入パケット', '$_packetsAdded'),
+      if (_integrityFails > 0) ('整合性エラー再試行', '$_integrityFails 回'),
       ('平均スキャン時間', _scanCount > 0 ? '${(_scanMsSum / _scanCount).round()} ms' : '-'),
     ];
     return Table(
@@ -392,7 +413,7 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
   Widget build(BuildContext context) {
     final cam = _cam;
     final received = _dec?.packetsReceived() ?? 0;
-    final ps = _packetSize ?? 44;
+    final ps = _packetSize ?? 42;
     final total = _dec == null
         ? null
         : (_dec!.payloadSize().toInt() + ps - 1) ~/ ps; // 必要 source パケット数
@@ -448,7 +469,8 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
                 ? _status
                 : 'frames: $_framesSeen  detected: $_framesDetected  '
                     'blocks: $_blocksOk  pkts: $received${total != null ? "/$total" : ""}  '
-                    'scan: ${_lastScanMs}ms',
+                    'scan: ${_lastScanMs}ms'
+                    '${_integrityFails > 0 ? "  整合性エラー: $_integrityFails" : ""}',
             style: const TextStyle(fontSize: 12),
           ),
         ),

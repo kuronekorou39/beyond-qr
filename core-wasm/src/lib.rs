@@ -118,6 +118,7 @@ pub struct VcodeTx {
 
 #[wasm_bindgen]
 impl VcodeTx {
+    /// payload には先頭に CRC-32 が付与される (受信側は vcodeUnwrapPayload で検証して剥がす)。
     #[wasm_bindgen(constructor)]
     pub fn new(payload: &[u8], extra_repair: u32, grid_w: u8, grid_h: u8, bits_per_cell: u8) -> VcodeTx {
         let bpc = if bits_per_cell == 2 { 2 } else { 1 };
@@ -126,8 +127,9 @@ impl VcodeTx {
             grid_w: grid_w.clamp(2, 12) as usize,
             grid_h: grid_h.clamp(2, 12) as usize,
         };
+        let wrapped = vcode::wrap_payload(payload);
         VcodeTx {
-            encoder: fountain::Encoder::new(payload, layout.packet_size(bpc) as u16, extra_repair),
+            encoder: fountain::Encoder::new(&wrapped, layout.packet_size(bpc) as u16, extra_repair),
             layout,
             bpc,
         }
@@ -180,6 +182,13 @@ impl VcodeTx {
             .collect();
         vcode::encode_frame(&header, &blocks, 1).data
     }
+}
+
+/// Fountain 復元結果のエンドツーエンド CRC-32 を検証して剥がす。
+/// undefined = 復元結果が破損 (受信側はデコーダを作り直して続行すべき)。
+#[wasm_bindgen(js_name = vcodeUnwrapPayload)]
+pub fn vcode_unwrap_payload(payload: &[u8]) -> Option<Vec<u8>> {
+    vcode::unwrap_payload(payload)
 }
 
 #[wasm_bindgen]

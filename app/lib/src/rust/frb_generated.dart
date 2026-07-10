@@ -69,7 +69,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => 829438833;
+  int get rustContentHash => -529141169;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -160,6 +160,8 @@ abstract class RustLibApi extends BaseApi {
     required String ec,
     required int minVersion,
   });
+
+  Uint8List? crateApiVcodeVcodeUnwrapPayload({required List<int> payload});
 
   RustArcIncrementStrongCountFnType
   get rust_arc_increment_strong_count_FountainDecoder;
@@ -777,6 +779,32 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     debugName: "make_qr",
     argNames: ["data", "ec", "minVersion"],
   );
+
+  @override
+  Uint8List? crateApiVcodeVcodeUnwrapPayload({required List<int> payload}) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_list_prim_u_8_loose(payload, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 19)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_opt_list_prim_u_8_strict,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiVcodeVcodeUnwrapPayloadConstMeta,
+        argValues: [payload],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiVcodeVcodeUnwrapPayloadConstMeta =>
+      const TaskConstMeta(
+        debugName: "vcode_unwrap_payload",
+        argNames: ["payload"],
+      );
 
   RustArcIncrementStrongCountFnType
   get rust_arc_increment_strong_count_FountainDecoder => wire

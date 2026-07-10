@@ -547,7 +547,7 @@ fn decode_at(
                 }
                 let bytes = bits_to_bytes(&bits);
                 let (payload, crc) = bytes.split_at(layout.block_payload_len(bpc));
-                if crate::crc16(payload) == u16::from_be_bytes([crc[0], crc[1]]) {
+                if crate::crc32(payload) == u32::from_be_bytes([crc[0], crc[1], crc[2], crc[3]]) {
                     Some(payload.to_vec())
                 } else {
                     None

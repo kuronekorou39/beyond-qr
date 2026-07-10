@@ -3,7 +3,7 @@
 //   - 受信: カメラ→輝度Y→VcodeRx.scan→パケット→FountainDecoder→生バイト→型sniff→保存
 // 受信側で CANDIDATES に無い格子は検出できないため、格子は 7x6 / 5x4 のみ。
 
-import { VcodeTx, VcodeRx, FountainDecoder } from "./pkg/beyond_qr_core_wasm.js";
+import { VcodeTx, VcodeRx, FountainDecoder, vcodeUnwrapPayload } from "./pkg/beyond_qr_core_wasm.js";
 
 const REPAIR_RATE = 0.5;
 
@@ -22,7 +22,7 @@ export class VcodeSender {
       ? fileOrBytes
       : new Uint8Array(await fileOrBytes.arrayBuffer());
     const [gw, gh] = gridStr.split("x").map(Number);
-    const packetSize = bpc === 2 ? 94 : 44;
+    const packetSize = bpc === 2 ? 92 : 42;
     const sourcePackets = Math.ceil(payload.length / packetSize);
     const extraRepair = Math.ceil(sourcePackets * REPAIR_RATE);
     const tx = new VcodeTx(payload, extraRepair, gw, gh, bpc);
@@ -144,7 +144,16 @@ export class VcodeReceiver {
       }
       this.onProgress({ frames: this.frames, detected: this.detected,
         blocks: report.blocksOk, blocksTotal: report.blocksTotal });
-      if (done) { this._finish(this.dec.payload()); }
+      if (done) {
+        // エンドツーエンド CRC-32 検証。不一致 = 復元結果が破損 → デコーダを捨てて受信続行
+        const payload = vcodeUnwrapPayload(this.dec.payload());
+        if (!payload) {
+          console.warn("[vcode-rx] 整合性エラー: 復元結果が破損。デコーダを再作成して受信続行");
+          this.dec = null;
+          return;
+        }
+        this._finish(payload);
+      }
     } else {
       this.onProgress({ frames: this.frames, detected: this.detected, blocks: 0, blocksTotal: 0 });
     }
@@ -165,6 +174,12 @@ function sniffType(b) {
   if (b.length > 3 && b[0] === 0xff && b[1] === 0xd8) return ["jpg", "image/jpeg"];
   if (b.length > 7 && b[0] === 0x89 && b[1] === 0x50) return ["png", "image/png"];
   if (b.length > 11 && b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return ["webp", "image/webp"];
+  // ISO-BMFF (オフセット 4 に 'ftyp'): HEIC/AVIF (iOS 写真の既定形式)
+  if (b.length > 11 && b[4] === 0x66 && b[5] === 0x74 && b[6] === 0x79 && b[7] === 0x70) {
+    const brand = String.fromCharCode(b[8], b[9], b[10], b[11]);
+    if (["heic", "heix", "hevc", "heim", "heis", "mif1", "msf1"].includes(brand)) return ["heic", "image/heic"];
+    if (brand === "avif" || brand === "avis") return ["avif", "image/avif"];
+  }
   if (b.length > 3 && b[0] === 0x25 && b[1] === 0x50 && b[2] === 0x44 && b[3] === 0x46) return ["pdf", "application/pdf"];
   if (b.length > 1 && b[0] === 0x50 && b[1] === 0x4b) return ["zip", "application/zip"];
   const probe = b.subarray(0, 4096);

@@ -27,7 +27,8 @@ pub struct VcodeFrameImage {
 impl VcodeTx {
     /// payload を vcode 用に符号化する。extra_repair はリペアパケット追加数。
     /// grid_w x grid_h はブロック格子 (5x4=標準, 7x6=高密度)。
-    /// bits_per_cell: 1=白黒 (packet 44B), 2=輝度4値 (packet 94B)。
+    /// bits_per_cell: 1=白黒 (packet 42B), 2=輝度4値 (packet 92B)。
+    /// payload には先頭に CRC-32 が付与される (受信側は vcode_unwrap_payload で検証して剥がす)。
     #[flutter_rust_bridge::frb(sync)]
     pub fn new(payload: Vec<u8>, extra_repair: u32, grid_w: u8, grid_h: u8, bits_per_cell: u8) -> VcodeTx {
         let bpc = if bits_per_cell == 2 { 2 } else { 1 };
@@ -36,8 +37,9 @@ impl VcodeTx {
             grid_w: grid_w.clamp(2, 12) as usize,
             grid_h: grid_h.clamp(2, 12) as usize,
         };
+        let wrapped = vcode::wrap_payload(&payload);
         VcodeTx {
-            encoder: fountain::Encoder::new(&payload, layout.packet_size(bpc) as u16, extra_repair),
+            encoder: fountain::Encoder::new(&wrapped, layout.packet_size(bpc) as u16, extra_repair),
             layout,
             bpc,
         }
@@ -88,6 +90,14 @@ impl VcodeTx {
             pixels: bm.data,
         }
     }
+}
+
+/// Fountain 復元結果のエンドツーエンド CRC-32 を検証して剥がす。
+/// None = ブロック CRC をすり抜けたゴミパケットで復元結果が破損している
+/// (受信側はデコーダを作り直して受信を続行すべき)。
+#[flutter_rust_bridge::frb(sync)]
+pub fn vcode_unwrap_payload(payload: Vec<u8>) -> Option<Vec<u8>> {
+    vcode::unwrap_payload(&payload)
 }
 
 /// スキャン結果。detected=false のとき error に理由 (デバッグログ用)。

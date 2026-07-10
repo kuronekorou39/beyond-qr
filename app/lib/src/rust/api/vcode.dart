@@ -8,6 +8,12 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `fail`, `rotate_y_plane`, `success`
 
+/// Fountain 復元結果のエンドツーエンド CRC-32 を検証して剥がす。
+/// None = ブロック CRC をすり抜けたゴミパケットで復元結果が破損している
+/// (受信側はデコーダを作り直して受信を続行すべき)。
+Uint8List? vcodeUnwrapPayload({required List<int> payload}) =>
+    RustLib.instance.api.crateApiVcodeVcodeUnwrapPayload(payload: payload);
+
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<VcodeRx>>
 abstract class VcodeRx implements RustOpaqueInterface {
   factory VcodeRx() => RustLib.instance.api.crateApiVcodeVcodeRxNew();
@@ -37,7 +43,8 @@ abstract class VcodeTx implements RustOpaqueInterface {
 
   /// payload を vcode 用に符号化する。extra_repair はリペアパケット追加数。
   /// grid_w x grid_h はブロック格子 (5x4=標準, 7x6=高密度)。
-  /// bits_per_cell: 1=白黒 (packet 44B), 2=輝度4値 (packet 94B)。
+  /// bits_per_cell: 1=白黒 (packet 42B), 2=輝度4値 (packet 92B)。
+  /// payload には先頭に CRC-32 が付与される (受信側は vcode_unwrap_payload で検証して剥がす)。
   factory VcodeTx({
     required List<int> payload,
     required int extraRepair,

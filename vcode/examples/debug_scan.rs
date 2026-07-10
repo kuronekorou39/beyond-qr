@@ -161,7 +161,9 @@ fn main() {
                     .map(|ch| ch.iter().fold(0u8, |acc, &b| (acc << 1) | b as u8))
                     .collect();
                 let (payload, crc) = bytes.split_at(layout.block_payload_len(1));
-                if beyond_qr_vcode::crc16(payload) == u16::from_be_bytes([crc[0], crc[1]]) {
+                if beyond_qr_vcode::crc32(payload)
+                    == u32::from_be_bytes([crc[0], crc[1], crc[2], crc[3]])
+                {
                     manual_ok += 1;
                 } else if bi < 3 {
                     println!(
