@@ -30,6 +30,9 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
   bool _busy = false;
   bool _active = false;
   bool _camBusy = false; // カメラ初期化/再初期化の多重実行ガード
+  bool _acquireRequested = false; // 次フレームで acquire (位置検出) を実行する
+  bool _acquiring = false; // acquire 実行中 (UI スピナー表示)
+  bool _seeded = false; // acquire 結果で受信位置を確定済み (中央ガイド枠に頼らず追従)
   Timer? _watchdog; // プレビューが灰色 (フレーム途絶) になったら作り直す
   VcodeRx? _rx;
 
@@ -183,6 +186,22 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
       final wantDump = _framesDetected == 0 && _framesSeen > 0 && _framesSeen % 150 == 0;
       final rx = _rx;
       if (rx == null) return;
+      // 位置検出 (acquire): 画面全体を sweep して実際の 4 隅を取得し、ポップアップで確認 →
+      // seed でトラッキングの種にする。以降 scan() は最初からその位置にロックして始まる。
+      if (_acquireRequested) {
+        _acquireRequested = false;
+        final rep = await rx.acquire(
+          y: y.bytes,
+          width: img.width,
+          height: img.height,
+          stride: y.bytesPerRow,
+          rotationDeg: rotation,
+        );
+        if (!mounted || !_active) return;
+        setState(() => _acquiring = false);
+        await _showAcquireDialog(rep, rx);
+        return;
+      }
       final report = await rx.scan(
         y: y.bytes,
         width: img.width,
@@ -353,9 +372,69 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
       _scanCount = 0;
       _firstDetected = null;
       _elapsed = null;
+      _acquireRequested = false;
+      _acquiring = false;
+      _seeded = false;
       _status = 'カメラ起動待ち';
     });
     await _initCamera();
+  }
+
+  /// 次フレームで acquire (位置検出) を走らせる。固定後の一回きりの重い処理なので
+  /// スピナーを出して待つ (その間カメラフレームは _busy でスキップされる)。
+  void _startAcquire() {
+    if (!_active || _payload != null || _acquiring) return;
+    setState(() {
+      _acquiring = true;
+      _acquireRequested = true;
+    });
+  }
+
+  /// acquire 結果を中央ポップアップで確認。確定なら seed して受信継続、やり直しなら再取得。
+  Future<void> _showAcquireDialog(VcodeAcquireReport rep, VcodeRx rx) async {
+    if (!mounted) return;
+    if (!rep.detected) {
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('位置を検出できませんでした'),
+          content: const Text(
+              'コードが画面に写っているか、ピントが合っているか確認して、もう一度お試しください。'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('閉じる')),
+          ],
+        ),
+      );
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('位置を検出しました'),
+        content: Text('格子 ${rep.gridW}×${rep.gridH} · 直近 ${rep.blocksOk}/${rep.blocksTotal} ブロック\n'
+            'この位置に固定したまま受信を開始しますか?'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false), child: const Text('やり直す')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('この位置で受信開始')),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    if (confirmed == true) {
+      // 検出した 4 隅・回転・格子をトラッキングの種にする。中央ガイド枠に頼らず即ロック。
+      rx.seed(
+        rot: rep.rot,
+        gridW: rep.gridW,
+        gridH: rep.gridH,
+        corners: rep.corners.toList(),
+      );
+      setState(() => _seeded = true);
+    } else {
+      _startAcquire();
+    }
   }
 
   @override
@@ -460,18 +539,55 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
                 )
               : cam == null || !cam.value.isInitialized
                   ? Center(child: Text(_status))
-                  : VcodeCameraView(cam),
+                  : Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        VcodeCameraView(cam),
+                        if (_acquiring)
+                          Container(
+                            color: Colors.black54,
+                            child: const Center(
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  CircularProgressIndicator(),
+                                  SizedBox(height: 12),
+                                  Text('位置を検出中…',
+                                      style: TextStyle(color: Colors.white, fontSize: 15)),
+                                ],
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
         ),
         Padding(
           padding: const EdgeInsets.all(8),
-          child: Text(
-            _payload != null
-                ? _status
-                : 'frames: $_framesSeen  detected: $_framesDetected  '
-                    'blocks: $_blocksOk  pkts: $received${total != null ? "/$total" : ""}  '
-                    'scan: ${_lastScanMs}ms'
-                    '${_integrityFails > 0 ? "  整合性エラー: $_integrityFails" : ""}',
-            style: const TextStyle(fontSize: 12),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (_payload == null && cam != null && cam.value.isInitialized) ...[
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: _acquiring ? null : _startAcquire,
+                    icon: Icon(_seeded ? Icons.refresh : Icons.center_focus_strong),
+                    label: Text(_seeded ? '位置を再検出' : 'うまく取得できない時: 位置を検出'),
+                  ),
+                ),
+                const SizedBox(height: 6),
+              ],
+              Text(
+                _payload != null
+                    ? _status
+                    : 'frames: $_framesSeen  detected: $_framesDetected  '
+                        'blocks: $_blocksOk  pkts: $received${total != null ? "/$total" : ""}  '
+                        'scan: ${_lastScanMs}ms'
+                        '${_seeded ? "  [位置固定]" : ""}'
+                        '${_integrityFails > 0 ? "  整合性エラー: $_integrityFails" : ""}',
+                style: const TextStyle(fontSize: 12),
+              ),
+            ],
           ),
         ),
       ],

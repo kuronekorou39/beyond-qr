@@ -2,7 +2,7 @@
 //! レンダリングしたフレームに透視変形・輝度勾配・ノイズを加えた「擬似カメラ画像」を作り、
 //! ずれたガイド枠からのスキャンでヘッダ+ブロックが回収できることを検証する。
 
-use beyond_qr_vcode::scan::{scan_frame, GrayImage, Homography, Quad};
+use beyond_qr_vcode::scan::{scan_frame, scan_frame_wide, GrayImage, Homography, Quad};
 use beyond_qr_vcode::{encode_frame, FrameHeader, Layout, VERSION};
 
 struct Lcg(u64);
@@ -152,6 +152,36 @@ fn scan_recovers_from_large_guide_offset() {
     assert_eq!(result.frame.header, header);
     let ok = result.frame.blocks.iter().filter(|b| b.is_some()).count();
     assert!(ok >= 19, "回収ブロックが少なすぎる: {ok}/20");
+}
+
+#[test]
+fn scan_wide_recovers_from_far_guide_offset() {
+    // acquire (位置合わせ) 相当。中央から大きく外れた/傾いたコードを、多位置 sweep の
+    // 1 位置として渡した guide から広域探索 (±96) で取得できることを検証する。
+    // 同じ ~78px ずれは通常受信 (±48) では取得できない (= acquire の存在意義)。
+    let layout = Layout::V0;
+    let (header, blocks) = test_frame(layout, 0x2E);
+    let frame_px = encode_frame(&header, &blocks, 8);
+    let dst = [
+        (180.0f32, 130.0),
+        (1010.0, 155.0),
+        (985.0, 950.0),
+        (205.0, 920.0),
+    ];
+    let canvas = synth_camera_image(&frame_px, 1280, 1080, &dst, 0xBEAD);
+    let img = GrayImage { w: 1280, h: 1080, data: &canvas };
+    // 各隅を真値から ~78px (±48 超, ±96 内) ずらす
+    let guide = Quad {
+        tl: (dst[0].0 - 78.0, dst[0].1 + 78.0),
+        tr: (dst[1].0 + 78.0, dst[1].1 - 78.0),
+        br: (dst[2].0 + 78.0, dst[2].1 + 78.0),
+        bl: (dst[3].0 - 78.0, dst[3].1 - 78.0),
+    };
+    assert!(scan_frame(&img, &guide, layout).is_err(), "通常受信 (±48) では取得できないはず");
+    let result = scan_frame_wide(&img, &guide, layout).expect("広域取得 (±96) で取得できるはず");
+    assert_eq!(result.frame.header, header);
+    let ok = result.frame.blocks.iter().filter(|b| b.is_some()).count();
+    assert!(ok >= 18, "取得後の回収ブロックが少なすぎる: {ok}/20");
 }
 
 #[test]

@@ -6,7 +6,7 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `fail`, `rotate_y_plane`, `success`
+// These functions are ignored because they are not marked as `pub`: `fail_acquire`, `fail`, `rotate_y_plane`, `success`
 
 /// Fountain 復元結果のエンドツーエンド CRC-32 を検証して剥がす。
 /// None = ブロック CRC をすり抜けたゴミパケットで復元結果が破損している
@@ -16,6 +16,17 @@ Uint8List? vcodeUnwrapPayload({required List<int> payload}) =>
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<VcodeRx>>
 abstract class VcodeRx implements RustOpaqueInterface {
+  /// 位置合わせ: 画面全体を多位置 × スケール × 全回転で sweep し、中央から外れた/傾いた
+  /// コードでも初回取得する。1 回きりの重い処理なので scan() とは別 (非同期ワーカー実行)。
+  /// 成功時は seed() に渡すべき rot・格子・4 隅を返す。self.last は変更しない (確認後に seed する)。
+  Future<VcodeAcquireReport> acquire({
+    required List<int> y,
+    required int width,
+    required int height,
+    required int stride,
+    required int rotationDeg,
+  });
+
   factory VcodeRx() => RustLib.instance.api.crateApiVcodeVcodeRxNew();
 
   /// カメラの Y プレーンから vcode をスキャンする。
@@ -30,6 +41,15 @@ abstract class VcodeRx implements RustOpaqueInterface {
     required int rotationDeg,
     required double guideFrac,
     required bool debugDump,
+  });
+
+  /// acquire で得た (回転, 格子, 4 隅) をトラッキングの種として設定する。
+  /// これ以降 scan() は最初からこの位置に追従した状態で始まる (中央ガイド枠に頼らない)。
+  void seed({
+    required int rot,
+    required int gridW,
+    required int gridH,
+    required List<double> corners,
   });
 }
 
@@ -60,6 +80,65 @@ abstract class VcodeTx implements RustOpaqueInterface {
   );
 
   int packetCount();
+}
+
+/// 位置合わせ (acquire) の結果。detected=true なら corners (回転後画像座標, tl,tr,br,bl の 8 値) と
+/// rot・格子を seed() に渡すと、その位置に追従した状態で受信を始められる。中央ガイド枠に頼らない。
+class VcodeAcquireReport {
+  final bool detected;
+
+  /// 検出時の回転 (seed に渡す)
+  final int rot;
+  final int gridW;
+  final int gridH;
+  final int blocksOk;
+  final int blocksTotal;
+
+  /// 回転後画像での 4 隅 [tl.x, tl.y, tr.x, tr.y, br.x, br.y, bl.x, bl.y]
+  final Float32List corners;
+
+  /// 回転後画像の寸法 (UI が corners を表示座標へ写すのに使う)
+  final int imgW;
+  final int imgH;
+
+  const VcodeAcquireReport({
+    required this.detected,
+    required this.rot,
+    required this.gridW,
+    required this.gridH,
+    required this.blocksOk,
+    required this.blocksTotal,
+    required this.corners,
+    required this.imgW,
+    required this.imgH,
+  });
+
+  @override
+  int get hashCode =>
+      detected.hashCode ^
+      rot.hashCode ^
+      gridW.hashCode ^
+      gridH.hashCode ^
+      blocksOk.hashCode ^
+      blocksTotal.hashCode ^
+      corners.hashCode ^
+      imgW.hashCode ^
+      imgH.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is VcodeAcquireReport &&
+          runtimeType == other.runtimeType &&
+          detected == other.detected &&
+          rot == other.rot &&
+          gridW == other.gridW &&
+          gridH == other.gridH &&
+          blocksOk == other.blocksOk &&
+          blocksTotal == other.blocksTotal &&
+          corners == other.corners &&
+          imgW == other.imgW &&
+          imgH == other.imgH;
 }
 
 /// フレーム画像 (グレースケール、1 セル = 1 ピクセル)

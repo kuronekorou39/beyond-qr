@@ -221,6 +221,8 @@ fn refine_homography(
     corners: &mut [(f32, f32); 4],
     layout: Layout,
     thr: u8,
+    coarse_half: i32,
+    coarse_step: usize,
 ) -> Option<Homography> {
     let (wc, hc) = (layout.width() as f32, layout.height() as f32);
     let src = [(0.0, 0.0), (wc, 0.0), (wc, hc), (0.0, hc)];
@@ -255,12 +257,12 @@ fn refine_homography(
         Some((hm, n))
     };
 
-    // 粗探索: 各コーナーを独立に全数探索 (±48px, 3px 刻み)。
+    // 粗探索: 各コーナーを独立に全数探索 (±coarse_half px, coarse_step px 刻み)。
     // 評価はそのコーナーのマーカーセルのみ。全数なのでマーカーの自己相似による
     // 局所最適に捕まらない。2 ラウンドでコーナー間の相互作用を収束させる。
-    // 範囲を ±48px に広げたのは、実機で可視ガイド枠に手持ちで合わせると
-    // 数十 px の構図ずれ・傾きが常に出るため (刻みは 3px に粗くして評価数を据え置き、
-    // 半セル未満の残差は後段の座標降下が吸収する)。
+    // 通常受信は ±48/3 (実機で可視ガイド枠に手持ちで合わせると数十 px の構図ずれが常に出るため)。
+    // acquire (位置合わせ) は ±96/6 に広げ、多位置 sweep と併せて画面外れ・傾きを取得する。
+    // 刻みを大きくして評価数は据え置き、半セル未満の残差は後段の座標降下が吸収する。
     for _ in 0..2 {
         for k in 0..4 {
             let base = corners[k];
@@ -268,8 +270,8 @@ fn refine_homography(
                 Some((_, n)) => n,
                 None => 0,
             };
-            for dy in (-48i32..=48).step_by(3) {
-                for dx in (-48i32..=48).step_by(3) {
+            for dy in (-coarse_half..=coarse_half).step_by(coarse_step) {
+                for dx in (-coarse_half..=coarse_half).step_by(coarse_step) {
                     if dx == 0 && dy == 0 {
                         continue;
                     }
@@ -367,6 +369,28 @@ pub fn scan_frame(
     guide: &Quad,
     layout: Layout,
 ) -> Result<ScanResult, FrameError> {
+    // 通常受信: 中央ガイド枠付近を ±48px で探索
+    scan_frame_ranged(img, guide, layout, 48, 3)
+}
+
+/// 位置合わせ (acquire) 用の広域版。コーナー粗探索を ±96px に広げ、呼び出し側の
+/// 多位置 sweep と併せて、画面中央から外れた/傾いたコードでも初回取得できるようにする。
+/// 通常受信 (scan_frame) より重いので、固定後の一回きりの取得にのみ使う。
+pub fn scan_frame_wide(
+    img: &GrayImage,
+    guide: &Quad,
+    layout: Layout,
+) -> Result<ScanResult, FrameError> {
+    scan_frame_ranged(img, guide, layout, 96, 6)
+}
+
+fn scan_frame_ranged(
+    img: &GrayImage,
+    guide: &Quad,
+    layout: Layout,
+    coarse_half: i32,
+    coarse_step: usize,
+) -> Result<ScanResult, FrameError> {
     let (wc, hc) = (layout.width() as f32, layout.height() as f32);
 
     // ガイド枠をそのまま初期 4 隅とする (粗→細探索が数十 px のずれを吸収する)
@@ -379,7 +403,7 @@ pub fn scan_frame(
     let thr0 = threshold_for(img, &hmat0, layout);
 
     // 既知パターン (コーナー + 擬似ランダム較正) への一致を最大化するよう 4 隅を微調整
-    let hmat = refine_homography(img, &mut corners, layout, thr0)
+    let hmat = refine_homography(img, &mut corners, layout, thr0, coarse_half, coarse_step)
         .ok_or(FrameError::CornerMismatch)?;
 
     decode_at(img, hmat, layout)

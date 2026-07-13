@@ -7,7 +7,7 @@
 
 use beyond_qr_fountain as fountain;
 use beyond_qr_vcode as vcode;
-use beyond_qr_vcode::scan::{scan_frame, scan_frame_tracked, GrayImage, Quad};
+use beyond_qr_vcode::scan::{scan_frame, scan_frame_tracked, scan_frame_wide, GrayImage, Quad};
 
 /// 送信側ハンドル。payload を vcode フレーム列に変換する。
 pub struct VcodeTx {
@@ -163,6 +163,37 @@ fn success(result: beyond_qr_vcode::scan::ScanResult, tracked: bool, layout: vco
     }
 }
 
+/// 位置合わせ (acquire) の結果。detected=true なら corners (回転後画像座標, tl,tr,br,bl の 8 値) と
+/// rot・格子を seed() に渡すと、その位置に追従した状態で受信を始められる。中央ガイド枠に頼らない。
+pub struct VcodeAcquireReport {
+    pub detected: bool,
+    /// 検出時の回転 (seed に渡す)
+    pub rot: u32,
+    pub grid_w: u8,
+    pub grid_h: u8,
+    pub blocks_ok: u32,
+    pub blocks_total: u32,
+    /// 回転後画像での 4 隅 [tl.x, tl.y, tr.x, tr.y, br.x, br.y, bl.x, bl.y]
+    pub corners: Vec<f32>,
+    /// 回転後画像の寸法 (UI が corners を表示座標へ写すのに使う)
+    pub img_w: u32,
+    pub img_h: u32,
+}
+
+fn fail_acquire() -> VcodeAcquireReport {
+    VcodeAcquireReport {
+        detected: false,
+        rot: 0,
+        grid_w: 0,
+        grid_h: 0,
+        blocks_ok: 0,
+        blocks_total: 0,
+        corners: vec![],
+        img_w: 0,
+        img_h: 0,
+    }
+}
+
 /// ストライド除去 + 回転 (rot: 0/90/180/270)。戻りは (回転後画像, 幅, 高さ)。
 fn rotate_y_plane(y: &[u8], w: usize, h: usize, stride: usize, rot: u32) -> (Vec<u8>, usize, usize) {
     let (rw, rh) = match rot {
@@ -281,5 +312,94 @@ impl VcodeRx {
         }
         self.last = None;
         fail(&errors.join(" / "))
+    }
+
+    /// 位置合わせ: 画面全体を多位置 × スケール × 全回転で sweep し、中央から外れた/傾いた
+    /// コードでも初回取得する。1 回きりの重い処理なので scan() とは別 (非同期ワーカー実行)。
+    /// 成功時は seed() に渡すべき rot・格子・4 隅を返す。self.last は変更しない (確認後に seed する)。
+    pub fn acquire(
+        &mut self,
+        y: Vec<u8>,
+        width: u32,
+        height: u32,
+        stride: u32,
+        rotation_deg: u32,
+    ) -> VcodeAcquireReport {
+        let (w, h, stride) = (width as usize, height as usize, stride as usize);
+        if stride < w || y.len() < stride * h {
+            return fail_acquire();
+        }
+        // 90 度単位の全回転を試す (縦横入れ替え・上下逆にも対応)。取得は 1 回きりなので重くてよい。
+        let rots = [
+            rotation_deg % 360,
+            (rotation_deg + 90) % 360,
+            (rotation_deg + 180) % 360,
+            (rotation_deg + 270) % 360,
+        ];
+        // ガイド枠の大きさ (画像幅比) と中心位置 (画像比) を振る。小さめスケールで隅寄りも拾う。
+        let scales = [0.7f64, 0.5, 0.38];
+        let centers = [0.5f32, 0.32, 0.68];
+        for rot in rots {
+            let (gray, rw, rh) = rotate_y_plane(&y, w, h, stride, rot);
+            let img = GrayImage { w: rw, h: rh, data: &gray };
+            for layout in vcode::Layout::CANDIDATES {
+                let aspect = layout.height() as f32 / layout.width() as f32;
+                for &s in &scales {
+                    let gw = (s * rw as f64) as f32;
+                    let gh = (gw * aspect).min(rh as f32 * 0.95);
+                    for &cxf in &centers {
+                        for &cyf in &centers {
+                            let cx = (cxf * rw as f32).clamp(gw / 2.0, rw as f32 - gw / 2.0);
+                            let cy = (cyf * rh as f32).clamp(gh / 2.0, rh as f32 - gh / 2.0);
+                            let guide = Quad {
+                                tl: (cx - gw / 2.0, cy - gh / 2.0),
+                                tr: (cx + gw / 2.0, cy - gh / 2.0),
+                                br: (cx + gw / 2.0, cy + gh / 2.0),
+                                bl: (cx - gw / 2.0, cy + gh / 2.0),
+                            };
+                            if let Ok(result) = scan_frame_wide(&img, &guide, layout) {
+                                let ok = result.frame.blocks.iter().filter(|b| b.is_some()).count();
+                                let c = result.corners;
+                                return VcodeAcquireReport {
+                                    detected: true,
+                                    rot,
+                                    grid_w: layout.grid_w as u8,
+                                    grid_h: layout.grid_h as u8,
+                                    blocks_ok: ok as u32,
+                                    blocks_total: layout.block_count() as u32,
+                                    corners: vec![
+                                        c[0].0, c[0].1, c[1].0, c[1].1, c[2].0, c[2].1, c[3].0, c[3].1,
+                                    ],
+                                    img_w: rw as u32,
+                                    img_h: rh as u32,
+                                };
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        fail_acquire()
+    }
+
+    /// acquire で得た (回転, 格子, 4 隅) をトラッキングの種として設定する。
+    /// これ以降 scan() は最初からこの位置に追従した状態で始まる (中央ガイド枠に頼らない)。
+    #[flutter_rust_bridge::frb(sync)]
+    pub fn seed(&mut self, rot: u32, grid_w: u8, grid_h: u8, corners: Vec<f32>) {
+        if corners.len() < 8 {
+            return;
+        }
+        let layout = vcode::Layout {
+            block: 20,
+            grid_w: grid_w as usize,
+            grid_h: grid_h as usize,
+        };
+        let c = [
+            (corners[0], corners[1]),
+            (corners[2], corners[3]),
+            (corners[4], corners[5]),
+            (corners[6], corners[7]),
+        ];
+        self.last = Some((rot, layout, c));
     }
 }
