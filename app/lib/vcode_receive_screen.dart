@@ -33,6 +33,8 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
   bool _acquireRequested = false; // 次フレームで acquire (位置検出) を実行する
   bool _acquiring = false; // acquire 実行中 (UI スピナー表示)
   bool _seeded = false; // acquire 結果で受信位置を確定済み (中央ガイド枠に頼らず追従)
+  List<double>? _detCorners; // acquire で検出した 4 隅 (回転後画像座標, 8 値) — ハイライト表示用
+  int _detImgW = 0, _detImgH = 0, _detRot = 0; // 検出時の回転後画像寸法と回転 (表示座標への変換用)
   Timer? _watchdog; // プレビューが灰色 (フレーム途絶) になったら作り直す
   VcodeRx? _rx;
 
@@ -198,7 +200,16 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
           rotationDeg: rotation,
         );
         if (!mounted || !_active) return;
-        setState(() => _acquiring = false);
+        setState(() {
+          _acquiring = false;
+          if (rep.detected) {
+            // 検出 4 隅をハイライト表示用に保持 (確認ダイアログの背後に見える)
+            _detCorners = rep.corners.toList();
+            _detImgW = rep.imgW;
+            _detImgH = rep.imgH;
+            _detRot = rep.rot;
+          }
+        });
         await _showAcquireDialog(rep, rx);
         return;
       }
@@ -375,6 +386,7 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
       _acquireRequested = false;
       _acquiring = false;
       _seeded = false;
+      _detCorners = null;
       _status = 'カメラ起動待ち';
     });
     await _initCamera();
@@ -387,6 +399,7 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
     setState(() {
       _acquiring = true;
       _acquireRequested = true;
+      _detCorners = null; // 前回のハイライトを消す
     });
   }
 
@@ -543,6 +556,20 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
                       fit: StackFit.expand,
                       children: [
                         VcodeCameraView(cam),
+                        // 検出領域のハイライト (シアン)。緑のガイド枠と区別できる色。
+                        if (_detCorners != null)
+                          CustomPaint(
+                            painter: _DetectedQuadPainter(
+                              corners: _detCorners!,
+                              imgW: _detImgW,
+                              imgH: _detImgH,
+                              delta: ((_cam?.description.sensorOrientation ?? 90) -
+                                      _detRot +
+                                      360) %
+                                  360,
+                              ar: cam.value.aspectRatio,
+                            ),
+                          ),
                         if (_acquiring)
                           Container(
                             color: Colors.black54,
@@ -593,4 +620,94 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
       ],
     );
   }
+}
+
+/// acquire で検出した 4 隅 (回転後画像座標) を、プレビュー表示座標へ写してハイライトする。
+/// 回転差 delta = (sensorOrientation - 検出時 rot) を吸収してからプレビュー矩形に一様スケールする。
+/// VcodeCameraView と同じ配置 (幅いっぱい・高さ = 幅×aspectRatio・上下中央) を前提にする。
+class _DetectedQuadPainter extends CustomPainter {
+  _DetectedQuadPainter({
+    required this.corners,
+    required this.imgW,
+    required this.imgH,
+    required this.delta,
+    required this.ar,
+  });
+
+  /// 回転後画像座標の 4 隅 [tl.x, tl.y, tr.x, tr.y, br.x, br.y, bl.x, bl.y]
+  final List<double> corners;
+  final int imgW;
+  final int imgH;
+
+  /// (sensorOrientation - 検出時 rot + 360) % 360。プレビューは sensorOrientation 空間。
+  final int delta;
+
+  /// controller.value.aspectRatio (VcodeCameraView の高さ計算と一致させる)
+  final double ar;
+
+  Offset _map(double x, double y, Size size) {
+    // 1) 回転後画像空間 (imgW×imgH) → プレビュー画像空間 (delta 回転)
+    double ix, iy;
+    int pwImg, phImg;
+    if (delta == 90) {
+      ix = imgH - 1 - y;
+      iy = x;
+      pwImg = imgH;
+      phImg = imgW;
+    } else if (delta == 180) {
+      ix = imgW - 1 - x;
+      iy = imgH - 1 - y;
+      pwImg = imgW;
+      phImg = imgH;
+    } else if (delta == 270) {
+      ix = y;
+      iy = imgW - 1 - x;
+      pwImg = imgH;
+      phImg = imgW;
+    } else {
+      ix = x;
+      iy = y;
+      pwImg = imgW;
+      phImg = imgH;
+    }
+    // 2) プレビュー画像空間 → ウィジェット座標 (幅いっぱい・高さ=幅×ar・上下中央)
+    final pw = size.width;
+    final ph = size.width * ar;
+    final off = (size.height - ph) / 2;
+    return Offset(ix / pwImg * pw, iy / phImg * ph + off);
+  }
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (corners.length < 8 || imgW == 0 || imgH == 0) return;
+    final tl = _map(corners[0], corners[1], size);
+    final tr = _map(corners[2], corners[3], size);
+    final br = _map(corners[4], corners[5], size);
+    final bl = _map(corners[6], corners[7], size);
+    final path = Path()
+      ..moveTo(tl.dx, tl.dy)
+      ..lineTo(tr.dx, tr.dy)
+      ..lineTo(br.dx, br.dy)
+      ..lineTo(bl.dx, bl.dy)
+      ..close();
+    canvas.drawPath(path, Paint()..color = const Color(0x3300E5FF));
+    canvas.drawPath(
+        path,
+        Paint()
+          ..color = const Color(0xFF00E5FF)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 3);
+    final dot = Paint()..color = const Color(0xFF00E5FF);
+    for (final p in [tl, tr, br, bl]) {
+      canvas.drawCircle(p, 6, dot);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _DetectedQuadPainter old) =>
+      old.corners != corners ||
+      old.delta != delta ||
+      old.imgW != imgW ||
+      old.imgH != imgH ||
+      old.ar != ar;
 }
