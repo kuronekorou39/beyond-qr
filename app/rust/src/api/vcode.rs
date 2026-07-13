@@ -236,29 +236,36 @@ impl VcodeRx {
 
         // フル探索: 回転 (指定値と 180 度違い) x レイアウト候補を順に試す。
         // レイアウトはヘッダにも載っているが、格子を張る前に既知セル座標が必要なので候補試行する。
+        // ガイド枠 (中央・guide_frac 幅) を初期値にコードを探す。手持ちで写る大きさが
+        // 一定しないため、UI が示す基準枠 (guide_frac) を中心に一回り小さい/大きいスケールも
+        // 試す。基準スケールを先頭に置き、よくある構図で早期確定させる。ロック後はトラッキングへ。
+        let base = guide_frac.clamp(0.4, 0.98);
+        let fracs = [base, (base * 0.78).max(0.4), (base * 1.15).min(0.98)];
         let mut errors = Vec::new();
         for rot in [rotation_deg % 360, (rotation_deg + 180) % 360] {
             let (gray, rw, rh) = rotate_y_plane(&y, w, h, stride, rot);
             let img = GrayImage { w: rw, h: rh, data: &gray };
+            let cx = rw as f32 / 2.0;
+            let cy = rh as f32 / 2.0;
 
             for layout in vcode::Layout::CANDIDATES {
-                // ガイド枠: 中央配置、幅 = guide_frac * 画像幅、アスペクトはレイアウト準拠
-                let gw = (guide_frac.clamp(0.2, 1.0) * rw as f64) as f32;
-                let gh = (gw * layout.height() as f32 / layout.width() as f32).min(rh as f32 * 0.95);
-                let cx = rw as f32 / 2.0;
-                let cy = rh as f32 / 2.0;
-                let guide = Quad {
-                    tl: (cx - gw / 2.0, cy - gh / 2.0),
-                    tr: (cx + gw / 2.0, cy - gh / 2.0),
-                    br: (cx + gw / 2.0, cy + gh / 2.0),
-                    bl: (cx - gw / 2.0, cy + gh / 2.0),
-                };
+                for &frac in &fracs {
+                    // ガイド枠: 中央配置、幅 = frac * 画像幅、アスペクトはレイアウト準拠
+                    let gw = (frac * rw as f64) as f32;
+                    let gh = (gw * layout.height() as f32 / layout.width() as f32).min(rh as f32 * 0.95);
+                    let guide = Quad {
+                        tl: (cx - gw / 2.0, cy - gh / 2.0),
+                        tr: (cx + gw / 2.0, cy - gh / 2.0),
+                        br: (cx + gw / 2.0, cy + gh / 2.0),
+                        bl: (cx - gw / 2.0, cy + gh / 2.0),
+                    };
 
-                match scan_frame(&img, &guide, layout) {
-                    Err(e) => errors.push(format!("rot{rot}/{}x{}:{e:?}", layout.grid_w, layout.grid_h)),
-                    Ok(result) => {
-                        self.last = Some((rot, layout, result.corners));
-                        return success(result, false, layout);
+                    match scan_frame(&img, &guide, layout) {
+                        Err(e) => errors.push(format!("rot{rot}/{}x{}:{e:?}", layout.grid_w, layout.grid_h)),
+                        Ok(result) => {
+                            self.last = Some((rot, layout, result.corners));
+                            return success(result, false, layout);
+                        }
                     }
                 }
             }
