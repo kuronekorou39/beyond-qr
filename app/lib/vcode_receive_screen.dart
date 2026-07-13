@@ -52,6 +52,9 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
   int _framesTracked = 0;
   int _blocksOk = 0;
   int _packetsAdded = 0;
+  // 受信できた ESI (Encoding Symbol ID) の集合。重複を除いた"実データ被覆"。
+  // RaptorQ は distinct が必要数 K に届くと復元できる。カバレッジ格子と distinct 数の表示に使う。
+  final Set<int> _seenEsi = {};
   int _integrityFails = 0; // エンドツーエンド CRC 不一致で受信をやり直した回数
   int _lastScanMs = 0;
   int _scanMsSum = 0;
@@ -242,6 +245,12 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
         var done = false;
         for (final p in report.packets) {
           _packetsAdded++;
+          if (p.length >= 4) {
+            // RaptorQ payload ID = SBN(1 byte) + ESI(3 byte, big-endian)。
+            // 単一ソースブロック前提 (SBN=0) で ESI をカバレッジ格子の座標に使う。
+            final esi = (p[1] << 16) | (p[2] << 8) | p[3];
+            _seenEsi.add(esi);
+          }
           if (_dec!.addPacket(packet: p)) {
             done = true;
             break;
@@ -378,6 +387,7 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
       _framesTracked = 0;
       _blocksOk = 0;
       _packetsAdded = 0;
+      _seenEsi.clear();
       _integrityFails = 0;
       _scanMsSum = 0;
       _scanCount = 0;
@@ -463,6 +473,27 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
     super.dispose();
   }
 
+  /// 受信データのカバレッジ格子 (ESI ごとの被覆)。幅からセル数を決めて正方マスで敷く。
+  Widget _coverageGrid(int k) {
+    return LayoutBuilder(builder: (ctx, c) {
+      const cell = 8.0;
+      final cols = (c.maxWidth / cell).floor().clamp(20, 200);
+      var cap = k;
+      for (final e in _seenEsi) {
+        if (e + 1 > cap) cap = e + 1;
+      }
+      final rows = cap <= 0 ? 0 : (cap + cols - 1) ~/ cols;
+      final cw = c.maxWidth / cols;
+      return SizedBox(
+        width: c.maxWidth,
+        height: rows * cw,
+        child: CustomPaint(
+          painter: _CoverageGridPainter(seen: _seenEsi, k: k, cols: cols),
+        ),
+      );
+    });
+  }
+
   /// 受信完了時の統計テーブル
   Widget _statsTable() {
     final p = _payload!;
@@ -504,7 +535,6 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
   @override
   Widget build(BuildContext context) {
     final cam = _cam;
-    final received = _dec?.packetsReceived() ?? 0;
     final ps = _packetSize ?? 42;
     final total = _dec == null
         ? null
@@ -604,14 +634,21 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
                 ),
                 const SizedBox(height: 6),
               ],
+              // 受信データのカバレッジ格子: ESI ごとのマスを、受信済み=緑(source)/水色(repair)、
+              // 未受信=灰で塗る。埋まらない穴が「取れていないフレームのデータ」= 未完了の原因。
+              if (_payload == null && total != null && _seenEsi.isNotEmpty) ...[
+                _coverageGrid(total),
+                const SizedBox(height: 4),
+              ],
               Text(
                 _payload != null
                     ? _status
-                    : 'frames: $_framesSeen  detected: $_framesDetected  '
-                        'blocks: $_blocksOk  pkts: $received${total != null ? "/$total" : ""}  '
-                        'scan: ${_lastScanMs}ms'
-                        '${_seeded ? "  [位置固定]" : ""}'
-                        '${_integrityFails > 0 ? "  整合性エラー: $_integrityFails" : ""}',
+                    : '検出 $_framesDetected/$_framesSeen · '
+                        // distinct (重複除く) が必要数 K に届くと復元される。投入は重複込みの累計。
+                        '受信 ${_seenEsi.length}${total != null ? "/$total 必要" : ""} '
+                        '(投入 $_packetsAdded 重複込) · scan ${_lastScanMs}ms'
+                        '${_seeded ? " · [位置固定]" : ""}'
+                        '${_integrityFails > 0 ? " · 整合性エラー $_integrityFails" : ""}',
                 style: const TextStyle(fontSize: 12),
               ),
             ],
@@ -710,4 +747,36 @@ class _DetectedQuadPainter extends CustomPainter {
       old.imgW != imgW ||
       old.imgH != imgH ||
       old.ar != ar;
+}
+
+/// 受信データのカバレッジ格子。ESI をマスに割り当て、受信済み=緑(source)/水色(repair)、
+/// 未受信=灰で塗る。埋まらない穴 = まだ取れていないパケット (= 復元が完了しない原因) が
+/// 一目でわかる。RaptorQ は distinct が必要数 K に届くと復元できる。
+class _CoverageGridPainter extends CustomPainter {
+  _CoverageGridPainter({required this.seen, required this.k, required this.cols});
+  final Set<int> seen;
+  final int k; // 必要 source パケット数 (ESI < k = source, >= k = repair)
+  final int cols;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    var cap = k;
+    for (final e in seen) {
+      if (e + 1 > cap) cap = e + 1;
+    }
+    if (cap <= 0 || cols <= 0) return;
+    final cw = size.width / cols;
+    final unseen = Paint()..color = const Color(0xFF37474F);
+    final src = Paint()..color = const Color(0xFF4CAF50);
+    final rep = Paint()..color = const Color(0xFF29B6F6);
+    for (var i = 0; i < cap; i++) {
+      final r = i ~/ cols, c = i % cols;
+      final rect = Rect.fromLTWH(c * cw, r * cw, cw - 1, cw - 1);
+      canvas.drawRect(rect, seen.contains(i) ? (i < k ? src : rep) : unseen);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _CoverageGridPainter old) =>
+      old.seen.length != seen.length || old.k != k || old.cols != cols;
 }
