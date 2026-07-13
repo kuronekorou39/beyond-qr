@@ -85,6 +85,8 @@ export class VcodeReceiver {
     this.cap = document.createElement("canvas");
     this.stream = null;
     this.rafId = null;
+    this.guideEl = null;
+    this._onResize = () => this._positionGuide();
   }
 
   async start() {
@@ -95,6 +97,9 @@ export class VcodeReceiver {
     });
     this.video.srcObject = this.stream;
     await this.video.play();
+    this._ensureGuide();
+    this.video.addEventListener("loadedmetadata", this._onResize);
+    window.addEventListener("resize", this._onResize);
     this.rx = new VcodeRx();
     const loop = () => { if (!this.stream) return; this._scan(); this.rafId = requestAnimationFrame(loop); };
     this.rafId = requestAnimationFrame(loop);
@@ -104,14 +109,53 @@ export class VcodeReceiver {
     this.rx = null; this.dec = null; this.finished = false; this.frames = 0; this.detected = 0;
   }
 
+  // scan() が探索する「中央・正方形クロップの GUIDE_FRAC 幅」ボックスを映像に重ねて描く。
+  // ユーザーはこの枠にコードを収めれば、スキャナのガイド初期値と一致して検出が始まる。
+  _ensureGuide() {
+    if (this.guideEl || !this.video.parentElement) return;
+    const el = document.createElement("div");
+    el.style.cssText =
+      "position:absolute;box-sizing:border-box;pointer-events:none;border:3px solid #f59e0b;" +
+      "border-radius:6px;box-shadow:0 0 0 9999px rgba(0,0,0,0.28);transition:border-color .12s;";
+    this.video.parentElement.appendChild(el);
+    this.guideEl = el;
+    this._positionGuide();
+  }
+
+  _positionGuide() {
+    if (!this.guideEl) return;
+    const vw = this.video.clientWidth, vh = this.video.clientHeight;
+    if (!vw || !vh) return;
+    // scan() は video 画素の中央正方形 (一辺 = min(w,h)) を切り出し、その GUIDE_FRAC 幅 ×
+    // (コード高/幅) の中央ボックスをガイドにする。表示は等倍スケールなので client 座標でも同じ比。
+    const GUIDE_FRAC = 0.8, ASPECT = 132 / 140; // 高さ/幅 (V1_DENSE 相当。V0=92/100 とほぼ同じ)
+    const side = Math.min(vw, vh);
+    const bw = side * GUIDE_FRAC, bh = bw * ASPECT;
+    const s = this.guideEl.style;
+    s.width = `${bw}px`; s.height = `${bh}px`;
+    s.left = `${(vw - bw) / 2}px`; s.top = `${(vh - bh) / 2}px`;
+  }
+
+  _setGuideLocked(locked) {
+    if (this.guideEl) this.guideEl.style.borderColor = locked ? "#22c55e" : "#f59e0b";
+  }
+
+  _removeGuide() {
+    if (this.guideEl) { this.guideEl.remove(); this.guideEl = null; }
+  }
+
   stop() {
     if (this.rafId) cancelAnimationFrame(this.rafId);
     this.rafId = null;
+    this.video.removeEventListener("loadedmetadata", this._onResize);
+    window.removeEventListener("resize", this._onResize);
+    this._removeGuide();
     if (this.stream) { this.stream.getTracks().forEach((t) => t.stop()); this.stream = null; }
   }
 
   _scan() {
     if (this.finished) return;
+    this._positionGuide();
     const vw = this.video.videoWidth, vh = this.video.videoHeight;
     if (!vw || !vh) return;
     // 中央正方形を最大 1280 に
@@ -132,6 +176,7 @@ export class VcodeReceiver {
     try {
       report = this.rx.scan(gray, target, target, target, 0, 0.8);
     } catch (_) { return; }
+    this._setGuideLocked(report.detected);
     if (report.detected) {
       this.detected++;
       if (!this.dec) {

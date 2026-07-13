@@ -127,6 +127,34 @@ fn scan_recovers_from_perspective_and_noise() {
 }
 
 #[test]
+fn scan_recovers_from_large_guide_offset() {
+    // 可視ガイド枠に手持ちで合わせたときの構図ずれを模擬。
+    // 旧実装の粗探索 (±32px) では届かない ~44px のずれでも、拡大した捕捉範囲 (±48px) で掴める。
+    let layout = Layout::V0;
+    let (header, blocks) = test_frame(layout, 0x6D);
+    let frame_px = encode_frame(&header, &blocks, 8);
+    let dst = [
+        (180.0f32, 130.0),
+        (1010.0, 155.0),
+        (985.0, 950.0),
+        (205.0, 920.0),
+    ];
+    let canvas = synth_camera_image(&frame_px, 1280, 1080, &dst, 0xA11C);
+    let img = GrayImage { w: 1280, h: 1080, data: &canvas };
+    // 各隅を真値から ~44px (±32 超) ずらす
+    let guide = Quad {
+        tl: (dst[0].0 - 44.0, dst[0].1 + 40.0),
+        tr: (dst[1].0 + 43.0, dst[1].1 - 38.0),
+        br: (dst[2].0 + 41.0, dst[2].1 + 44.0),
+        bl: (dst[3].0 - 40.0, dst[3].1 - 42.0),
+    };
+    let result = scan_frame(&img, &guide, layout).expect("大きめガイドずれのスキャン失敗");
+    assert_eq!(result.frame.header, header);
+    let ok = result.frame.blocks.iter().filter(|b| b.is_some()).count();
+    assert!(ok >= 19, "回収ブロックが少なすぎる: {ok}/20");
+}
+
+#[test]
 fn scan_dense_layout_at_1080p_cell_resolution() {
     // 7x6 高密度レイアウト (140x132 セル)。1080p 実機相当の ~5.9px/セルで検証する。
     let layout = Layout::V1_DENSE;

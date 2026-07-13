@@ -310,23 +310,31 @@ impl VcodeRx {
             }
         }
 
+        // ガイド枠 (中央・正方形クロップの guide_frac 幅) を初期値にコードを探す。
+        // 実機は手持ちでコードの写る大きさが一定しないため、UI が示す基準枠 (guide_frac) を
+        // 中心に一回り小さい/大きいスケールも試す。基準スケールを先頭に置き、よくある構図で
+        // 早期に確定させる。ロック後は self.last 経由のトラッキングに移り多スケール探索は走らない。
+        let base = guide_frac.clamp(0.4, 0.98);
+        let fracs = [base, (base * 0.78).max(0.4), (base * 1.15).min(0.98)];
         for rot in [rotation_deg % 360, (rotation_deg + 180) % 360] {
             let (gray, rw, rh) = vcode_rotate(y, w, h, stride, rot);
             let img = GrayImage { w: rw, h: rh, data: &gray };
+            let cx = rw as f32 / 2.0;
+            let cy = rh as f32 / 2.0;
             for layout in vcode::Layout::CANDIDATES {
-                let gw = (guide_frac.clamp(0.2, 1.0) * rw as f64) as f32;
-                let gh = (gw * layout.height() as f32 / layout.width() as f32).min(rh as f32 * 0.95);
-                let cx = rw as f32 / 2.0;
-                let cy = rh as f32 / 2.0;
-                let guide = Quad {
-                    tl: (cx - gw / 2.0, cy - gh / 2.0),
-                    tr: (cx + gw / 2.0, cy - gh / 2.0),
-                    br: (cx + gw / 2.0, cy + gh / 2.0),
-                    bl: (cx - gw / 2.0, cy + gh / 2.0),
-                };
-                if let Ok(result) = scan_frame(&img, &guide, layout) {
-                    self.last = Some((rot, layout, result.corners));
-                    return vcode_success(result, layout);
+                for &frac in &fracs {
+                    let gw = (frac * rw as f64) as f32;
+                    let gh = (gw * layout.height() as f32 / layout.width() as f32).min(rh as f32 * 0.95);
+                    let guide = Quad {
+                        tl: (cx - gw / 2.0, cy - gh / 2.0),
+                        tr: (cx + gw / 2.0, cy - gh / 2.0),
+                        br: (cx + gw / 2.0, cy + gh / 2.0),
+                        bl: (cx - gw / 2.0, cy + gh / 2.0),
+                    };
+                    if let Ok(result) = scan_frame(&img, &guide, layout) {
+                        self.last = Some((rot, layout, result.corners));
+                        return vcode_success(result, layout);
+                    }
                 }
             }
         }
