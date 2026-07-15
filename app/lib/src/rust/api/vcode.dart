@@ -14,6 +14,22 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 Uint8List? vcodeUnwrapPayload({required List<int> payload}) =>
     RustLib.instance.api.crateApiVcodeVcodeUnwrapPayload(payload: payload);
 
+/// 元のファイル名/MIME をヘッダに埋めて送信ペイロードを作る (受信側で元名・種別を復元する用)。
+/// これを VcodeTx に渡す payload とする。
+Uint8List vcodeWrapFile({
+  required String name,
+  required String mime,
+  required List<int> data,
+}) => RustLib.instance.api.crateApiVcodeVcodeWrapFile(
+  name: name,
+  mime: mime,
+  data: data,
+);
+
+/// 復元済みペイロードから元のファイル名/MIME/中身を取り出す。ヘッダが無ければ None。
+VcodeFile? vcodeUnwrapFile({required List<int> buf}) =>
+    RustLib.instance.api.crateApiVcodeVcodeUnwrapFile(buf: buf);
+
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<VcodeRx>>
 abstract class VcodeRx implements RustOpaqueInterface {
   /// 位置合わせ: 画面全体を多位置 × スケール × 全回転で sweep し、中央から外れた/傾いた
@@ -139,6 +155,27 @@ class VcodeAcquireReport {
           corners == other.corners &&
           imgW == other.imgW &&
           imgH == other.imgH;
+}
+
+/// unwrap_file の Flutter 向けミラー。ヘッダが無ければ None (旧形式=従来処理へフォールバック)。
+class VcodeFile {
+  final String name;
+  final String mime;
+  final Uint8List data;
+
+  const VcodeFile({required this.name, required this.mime, required this.data});
+
+  @override
+  int get hashCode => name.hashCode ^ mime.hashCode ^ data.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is VcodeFile &&
+          runtimeType == other.runtimeType &&
+          name == other.name &&
+          mime == other.mime &&
+          data == other.data;
 }
 
 /// フレーム画像 (グレースケール、1 セル = 1 ピクセル)

@@ -69,7 +69,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => 1293245313;
+  int get rustContentHash => -1820669283;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -178,7 +178,15 @@ abstract class RustLibApi extends BaseApi {
     required int minVersion,
   });
 
+  VcodeFile? crateApiVcodeVcodeUnwrapFile({required List<int> buf});
+
   Uint8List? crateApiVcodeVcodeUnwrapPayload({required List<int> payload});
+
+  Uint8List crateApiVcodeVcodeWrapFile({
+    required String name,
+    required String mime,
+    required List<int> data,
+  });
 
   RustArcIncrementStrongCountFnType
   get rust_arc_increment_strong_count_FountainDecoder;
@@ -882,13 +890,36 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   );
 
   @override
+  VcodeFile? crateApiVcodeVcodeUnwrapFile({required List<int> buf}) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_list_prim_u_8_loose(buf, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 21)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_opt_box_autoadd_vcode_file,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiVcodeVcodeUnwrapFileConstMeta,
+        argValues: [buf],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiVcodeVcodeUnwrapFileConstMeta =>
+      const TaskConstMeta(debugName: "vcode_unwrap_file", argNames: ["buf"]);
+
+  @override
   Uint8List? crateApiVcodeVcodeUnwrapPayload({required List<int> payload}) {
     return handler.executeSync(
       SyncTask(
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_list_prim_u_8_loose(payload, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 21)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 22)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_opt_list_prim_u_8_strict,
@@ -906,6 +937,37 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         debugName: "vcode_unwrap_payload",
         argNames: ["payload"],
       );
+
+  @override
+  Uint8List crateApiVcodeVcodeWrapFile({
+    required String name,
+    required String mime,
+    required List<int> data,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(name, serializer);
+          sse_encode_String(mime, serializer);
+          sse_encode_list_prim_u_8_loose(data, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 23)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_prim_u_8_strict,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiVcodeVcodeWrapFileConstMeta,
+        argValues: [name, mime, data],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiVcodeVcodeWrapFileConstMeta => const TaskConstMeta(
+    debugName: "vcode_wrap_file",
+    argNames: ["name", "mime", "data"],
+  );
 
   RustArcIncrementStrongCountFnType
   get rust_arc_increment_strong_count_FountainDecoder => wire
@@ -1069,6 +1131,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  VcodeFile dco_decode_box_autoadd_vcode_file(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_vcode_file(raw);
+  }
+
+  @protected
   double dco_decode_f_32(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as double;
@@ -1114,6 +1182,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   String? dco_decode_opt_String(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_String(raw);
+  }
+
+  @protected
+  VcodeFile? dco_decode_opt_box_autoadd_vcode_file(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_vcode_file(raw);
   }
 
   @protected
@@ -1186,6 +1260,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       corners: dco_decode_list_prim_f_32_strict(arr[6]),
       imgW: dco_decode_u_32(arr[7]),
       imgH: dco_decode_u_32(arr[8]),
+    );
+  }
+
+  @protected
+  VcodeFile dco_decode_vcode_file(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return VcodeFile(
+      name: dco_decode_String(arr[0]),
+      mime: dco_decode_String(arr[1]),
+      data: dco_decode_list_prim_u_8_strict(arr[2]),
     );
   }
 
@@ -1393,6 +1480,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  VcodeFile sse_decode_box_autoadd_vcode_file(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_vcode_file(deserializer));
+  }
+
+  @protected
   double sse_decode_f_32(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return deserializer.buffer.getFloat32();
@@ -1452,6 +1545,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
     if (sse_decode_bool(deserializer)) {
       return (sse_decode_String(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  VcodeFile? sse_decode_opt_box_autoadd_vcode_file(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_vcode_file(deserializer));
     } else {
       return null;
     }
@@ -1536,6 +1642,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       imgW: var_imgW,
       imgH: var_imgH,
     );
+  }
+
+  @protected
+  VcodeFile sse_decode_vcode_file(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_name = sse_decode_String(deserializer);
+    var var_mime = sse_decode_String(deserializer);
+    var var_data = sse_decode_list_prim_u_8_strict(deserializer);
+    return VcodeFile(name: var_name, mime: var_mime, data: var_data);
   }
 
   @protected
@@ -1768,6 +1883,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_vcode_file(
+    VcodeFile self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_vcode_file(self, serializer);
+  }
+
+  @protected
   void sse_encode_f_32(double self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     serializer.buffer.putFloat32(self);
@@ -1846,6 +1970,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_opt_box_autoadd_vcode_file(
+    VcodeFile? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_vcode_file(self, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_opt_list_prim_u_8_strict(
     Uint8List? self,
     SseSerializer serializer,
@@ -1915,6 +2052,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_list_prim_f_32_strict(self.corners, serializer);
     sse_encode_u_32(self.imgW, serializer);
     sse_encode_u_32(self.imgH, serializer);
+  }
+
+  @protected
+  void sse_encode_vcode_file(VcodeFile self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.name, serializer);
+    sse_encode_String(self.mime, serializer);
+    sse_encode_list_prim_u_8_strict(self.data, serializer);
   }
 
   @protected

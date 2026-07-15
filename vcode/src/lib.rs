@@ -488,6 +488,62 @@ pub fn unwrap_payload(buf: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
+/// ファイルメタ (名前 + MIME) を先頭に付けた自己記述コンテナのマジック。
+/// 先頭の NUL で実ファイル (テキスト/JPEG/PNG/ZIP 等) の先頭との衝突を避ける。
+pub const FILE_MAGIC: [u8; 4] = [0x00, 0x56, 0x46, 0x31]; // \0 V F 1 = "Vcode File v1"
+
+/// unwrap_file の戻り値。元のファイル名・MIME・中身。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileMeta {
+    pub name: String,
+    pub mime: String,
+    pub data: Vec<u8>,
+}
+
+/// ファイル名・MIME を先頭ヘッダに付けて中身と 1 本のバイト列にする。
+/// レイアウト: [MAGIC 4][ver 1][name_len u16 LE][name][mime_len u16 LE][mime][data...]。
+/// vcode は生バイトしか運ばないため、これを payload として送ると受信側で元名・種別を復元できる。
+pub fn wrap_file(name: &str, mime: &str, data: &[u8]) -> Vec<u8> {
+    let nb = name.as_bytes();
+    let mb = mime.as_bytes();
+    // 名前/MIME は u16 長に収める (異常長は切り詰め。実ファイル名で起きることはない)
+    let nlen = nb.len().min(u16::MAX as usize);
+    let mlen = mb.len().min(u16::MAX as usize);
+    let mut v = Vec::with_capacity(4 + 1 + 2 + nlen + 2 + mlen + data.len());
+    v.extend_from_slice(&FILE_MAGIC);
+    v.push(1); // version
+    v.extend_from_slice(&(nlen as u16).to_le_bytes());
+    v.extend_from_slice(&nb[..nlen]);
+    v.extend_from_slice(&(mlen as u16).to_le_bytes());
+    v.extend_from_slice(&mb[..mlen]);
+    v.extend_from_slice(data);
+    v
+}
+
+/// wrap_file の逆。マジックが無い/壊れている場合は None (= 旧形式の生バイト。
+/// 受信側は従来どおり中身推測 + タイムスタンプ名にフォールバックする)。
+pub fn unwrap_file(buf: &[u8]) -> Option<FileMeta> {
+    if buf.len() < 7 || buf[..4] != FILE_MAGIC || buf[4] != 1 {
+        return None;
+    }
+    let mut off = 5usize;
+    let nlen = u16::from_le_bytes([buf[off], buf[off + 1]]) as usize;
+    off += 2;
+    if buf.len() < off + nlen + 2 {
+        return None;
+    }
+    let name = String::from_utf8(buf[off..off + nlen].to_vec()).ok()?;
+    off += nlen;
+    let mlen = u16::from_le_bytes([buf[off], buf[off + 1]]) as usize;
+    off += 2;
+    if buf.len() < off + mlen {
+        return None;
+    }
+    let mime = String::from_utf8(buf[off..off + mlen].to_vec()).ok()?;
+    off += mlen;
+    Some(FileMeta { name, mime, data: buf[off..].to_vec() })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -517,6 +573,35 @@ mod tests {
     fn crc32_known_vector() {
         // CRC-32/ISO-HDLC の標準テストベクタ
         assert_eq!(crc32(b"123456789"), 0xCBF43926);
+    }
+
+    #[test]
+    fn file_wrap_roundtrip() {
+        let data = b"\x50\x4b\x03\x04 fake docx zip bytes".to_vec();
+        let wrapped = wrap_file("report.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", &data);
+        let got = unwrap_file(&wrapped).expect("ヘッダを解けるはず");
+        assert_eq!(got.name, "report.docx");
+        assert_eq!(got.mime, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+        assert_eq!(got.data, data);
+    }
+
+    #[test]
+    fn file_wrap_empty_meta() {
+        let data = vec![1u8, 2, 3];
+        let wrapped = wrap_file("", "", &data);
+        let got = unwrap_file(&wrapped).unwrap();
+        assert_eq!(got.name, "");
+        assert_eq!(got.mime, "");
+        assert_eq!(got.data, data);
+    }
+
+    #[test]
+    fn unwrap_file_rejects_raw_bytes() {
+        // 旧形式 (マジックなしの生バイト) は None を返し、受信側が従来処理にフォールバックできる
+        assert_eq!(unwrap_file(b"\xff\xd8plain jpeg start"), None);
+        assert_eq!(unwrap_file(b"PK\x03\x04zip"), None);
+        assert_eq!(unwrap_file(b"hello"), None);
+        assert_eq!(unwrap_file(b""), None);
     }
 
     #[test]

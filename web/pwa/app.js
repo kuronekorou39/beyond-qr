@@ -1,7 +1,7 @@
 // beyond-qr PC PWA — エントリ (結線)。
 // Rust コア (fountain) を WASM で初期化し、送信 (Sender) / 受信 (Receiver) を UI に繋ぐ。
 
-import init, { FountainEncoder, FountainDecoder } from "./pkg/beyond_qr_core_wasm.js";
+import init, { FountainEncoder, FountainDecoder, vcodeWrapFile } from "./pkg/beyond_qr_core_wasm.js";
 import { Sender } from "./sender.js";
 import { Receiver } from "./receiver.js";
 import { VcodeSender, VcodeReceiver } from "./vcode.js";
@@ -110,13 +110,21 @@ $("txStop").addEventListener("click", () => {
 // ---- V送信 (vcode) ----
 $("vtxStart").addEventListener("click", async () => {
   const file = $("vtxFile").files[0];
-  let source = file;
-  if (!source) {
-    // ファイル未選択ならテキストを送信 (VcodeSender は Uint8Array を受け付ける)
+  let bytes, name, mime;
+  if (file) {
+    bytes = new Uint8Array(await file.arrayBuffer());
+    name = file.name;
+    mime = file.type || "";
+  } else {
+    // ファイル未選択ならテキストを送信
     const text = $("vtxText").value;
     if (!text) { $("vtxInfo").textContent = "ファイルを選択するかテキストを入力してください"; return; }
-    source = new TextEncoder().encode(text);
+    bytes = new TextEncoder().encode(text);
+    name = "message.txt";
+    mime = "text/plain;charset=utf-8";
   }
+  // 元のファイル名/MIME をヘッダに埋めて送る (受信側で元名・種別をそのまま復元)
+  const source = vcodeWrapFile(name, mime, bytes);
   const grid = $("vtxGrid").value;
   const bpc = parseInt($("vtxBpc").value) || 2;
   const fps = Math.max(2, Math.min(30, parseInt($("vtxFps").value) || 12));

@@ -23,6 +23,7 @@ class _VcodeSendScreenState extends State<VcodeSendScreen> {
   final _textCtrl = TextEditingController();
   String? _pickedPath;
   String? _pickedName;
+  String? _pickedMime; // 選択ファイルの MIME (受信側で元種別を復元する用)
   int _pickedSize = 0;
 
   int _fps = 15; // 実測: 2bit はクリーンキャプチャ保証が効く 15fps が最適 (1bit なら 20fps)
@@ -46,6 +47,7 @@ class _VcodeSendScreenState extends State<VcodeSendScreen> {
     setState(() {
       _pickedPath = f.path;
       _pickedName = f.name;
+      _pickedMime = f.mimeType;
       _pickedSize = len;
     });
   }
@@ -84,11 +86,16 @@ class _VcodeSendScreenState extends State<VcodeSendScreen> {
   }
 
   Future<void> _start() async {
-    final payload = await _buildPayload();
-    if (payload == null) {
+    final raw = await _buildPayload();
+    if (raw == null) {
       setState(() => _status = 'ペイロードが空です');
       return;
     }
+    // 元のファイル名/MIME をヘッダに埋めて送る (受信側で元名・種別をそのまま復元)。
+    final name = _pickedName ?? 'message.txt';
+    final mime =
+        _pickedPath != null ? (_pickedMime ?? '') : 'text/plain;charset=utf-8';
+    final payload = vcodeWrapFile(name: name, mime: mime, data: raw);
     final packetSize = _bpc == 2 ? 92 : 42;
     final sourcePackets = (payload.length / packetSize).ceil();
     final gridParts = _grid.split('x');
@@ -232,6 +239,7 @@ class _VcodeSendScreenState extends State<VcodeSendScreen> {
                 onPressed: () => setState(() {
                   _pickedPath = null;
                   _pickedName = null;
+                  _pickedMime = null;
                   _pickedSize = 0;
                 }),
               ),

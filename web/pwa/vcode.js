@@ -3,7 +3,7 @@
 //   - 受信: カメラ→輝度Y→VcodeRx.scan→パケット→FountainDecoder→生バイト→型sniff→保存
 // 受信側で CANDIDATES に無い格子は検出できないため、格子は 7x6 / 5x4 のみ。
 
-import { VcodeTx, VcodeRx, FountainDecoder, vcodeUnwrapPayload } from "./pkg/beyond_qr_core_wasm.js";
+import { VcodeTx, VcodeRx, FountainDecoder, vcodeUnwrapPayload, vcodeUnwrapFile } from "./pkg/beyond_qr_core_wasm.js";
 
 const REPAIR_RATE = 0.5;
 
@@ -204,13 +204,26 @@ export class VcodeReceiver {
     }
   }
 
-  _finish(payload) {
+  _finish(rawPayload) {
     this.finished = true;
     this.stop();
-    const [ext, mime] = sniffType(payload);
-    const blob = new Blob([payload], { type: mime });
-    const name = `vcode_${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}.${ext}`;
-    this.onDone({ name, type: mime, size: payload.length, blob });
+    // ファイル名/MIME ヘッダがあれば元の名前・種別で復元。無ければ従来どおり推測+タイムスタンプ名。
+    const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    const meta = vcodeUnwrapFile(rawPayload);
+    let data, name, mime;
+    if (meta) {
+      data = meta.data;
+      const [ext, sm] = sniffType(data);
+      name = meta.name || `vcode_${ts}.${ext}`;
+      mime = meta.mime || sm;
+    } else {
+      data = rawPayload;
+      const [ext, m] = sniffType(data);
+      name = `vcode_${ts}.${ext}`;
+      mime = m;
+    }
+    const blob = new Blob([data], { type: mime });
+    this.onDone({ name, type: mime, size: data.length, blob });
   }
 }
 

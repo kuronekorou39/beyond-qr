@@ -191,6 +191,43 @@ pub fn vcode_unwrap_payload(payload: &[u8]) -> Option<Vec<u8>> {
     vcode::unwrap_payload(payload)
 }
 
+/// 元のファイル名/MIME をヘッダに埋めて送信ペイロードを作る (受信側で元名・種別を復元する用)。
+/// これを VcodeTx に渡す payload とする。
+#[wasm_bindgen(js_name = vcodeWrapFile)]
+pub fn vcode_wrap_file(name: &str, mime: &str, data: &[u8]) -> Vec<u8> {
+    vcode::wrap_file(name, mime, data)
+}
+
+/// 復元済みペイロードのファイルメタ (JS から name/mime/data を読む)。
+#[wasm_bindgen]
+pub struct VcodeFile {
+    name: String,
+    mime: String,
+    data: Vec<u8>,
+}
+
+#[wasm_bindgen]
+impl VcodeFile {
+    #[wasm_bindgen(getter)]
+    pub fn name(&self) -> String {
+        self.name.clone()
+    }
+    #[wasm_bindgen(getter)]
+    pub fn mime(&self) -> String {
+        self.mime.clone()
+    }
+    #[wasm_bindgen(getter)]
+    pub fn data(&self) -> Vec<u8> {
+        self.data.clone()
+    }
+}
+
+/// 復元済みペイロードから元のファイル名/MIME/中身を取り出す。ヘッダが無ければ undefined。
+#[wasm_bindgen(js_name = vcodeUnwrapFile)]
+pub fn vcode_unwrap_file(buf: &[u8]) -> Option<VcodeFile> {
+    vcode::unwrap_file(buf).map(|m| VcodeFile { name: m.name, mime: m.mime, data: m.data })
+}
+
 #[wasm_bindgen]
 pub struct VcodeScanReport {
     detected: bool,

@@ -324,7 +324,24 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
     return ('bin', 'application/octet-stream');
   }
 
-  Future<void> _onComplete(Uint8List payload) async {
+  Future<void> _onComplete(Uint8List rawPayload) async {
+    // ファイル名/MIME ヘッダがあれば元の名前・種別で保存。無ければ従来どおり推測+タイムスタンプ名。
+    final meta = vcodeUnwrapFile(buf: rawPayload);
+    final Uint8List payload;
+    final String name;
+    final String mime;
+    final ts = DateTime.now().toIso8601String().replaceAll(':', '-').substring(0, 19);
+    if (meta != null) {
+      payload = meta.data;
+      final sniff = _sniffType(payload);
+      name = meta.name.isNotEmpty ? meta.name : 'vcode_$ts.${sniff.$1}';
+      mime = meta.mime.isNotEmpty ? meta.mime : sniff.$2;
+    } else {
+      payload = rawPayload;
+      final sniff = _sniffType(payload);
+      name = 'vcode_$ts.${sniff.$1}';
+      mime = sniff.$2;
+    }
     final elapsed = _firstDetected == null
         ? Duration.zero
         : DateTime.now().difference(_firstDetected!);
@@ -341,14 +358,11 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
         ' · 検出$_framesDetected/$_framesSeen(追従$_framesTracked)'
         ' · blk$_blocksOk · pkt$_packetsAdded'
         ' · scan${_scanCount > 0 ? (_scanMsSum / _scanCount).round() : 0}ms';
-    debugPrint('[vcode-rx] COMPLETE: ${payload.length} bytes in ${ms}ms, $note');
-    // 履歴に保存 (QR 受信と同じ HistoryStore、種別は内容から推定)
+    debugPrint('[vcode-rx] COMPLETE: $name ${payload.length} bytes in ${ms}ms, $note');
+    // 履歴に保存 (QR 受信と同じ HistoryStore)。名前/種別はヘッダ優先、無ければ内容推定。
     try {
-      final (ext, mime) = _sniffType(payload);
       final slot = HistoryStore.instance.reserveReceivedPath();
       await File(slot.path).writeAsBytes(payload);
-      final name =
-          'vcode_${DateTime.now().toIso8601String().replaceAll(':', '-').substring(0, 19)}.$ext';
       await HistoryStore.instance
           .registerReceived(slot.id, name, mime, payload.length, note: note);
       setState(() {

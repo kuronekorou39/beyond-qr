@@ -100,6 +100,26 @@ pub fn vcode_unwrap_payload(payload: Vec<u8>) -> Option<Vec<u8>> {
     vcode::unwrap_payload(&payload)
 }
 
+/// 元のファイル名/MIME をヘッダに埋めて送信ペイロードを作る (受信側で元名・種別を復元する用)。
+/// これを VcodeTx に渡す payload とする。
+#[flutter_rust_bridge::frb(sync)]
+pub fn vcode_wrap_file(name: String, mime: String, data: Vec<u8>) -> Vec<u8> {
+    vcode::wrap_file(&name, &mime, &data)
+}
+
+/// unwrap_file の Flutter 向けミラー。ヘッダが無ければ None (旧形式=従来処理へフォールバック)。
+pub struct VcodeFile {
+    pub name: String,
+    pub mime: String,
+    pub data: Vec<u8>,
+}
+
+/// 復元済みペイロードから元のファイル名/MIME/中身を取り出す。ヘッダが無ければ None。
+#[flutter_rust_bridge::frb(sync)]
+pub fn vcode_unwrap_file(buf: Vec<u8>) -> Option<VcodeFile> {
+    vcode::unwrap_file(&buf).map(|m| VcodeFile { name: m.name, mime: m.mime, data: m.data })
+}
+
 /// スキャン結果。detected=false のとき error に理由 (デバッグログ用)。
 pub struct VcodeScanReport {
     pub detected: bool,
