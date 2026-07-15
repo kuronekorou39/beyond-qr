@@ -496,25 +496,14 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
     );
   }
 
-  /// 受信データのカバレッジ格子 (ESI ごとの被覆)。幅からセル数を決めて正方マスで敷く。
+  /// 受信データのカバレッジ格子 (ESI ごとの被覆)。高さは固定で、セル数が増えても
+  /// マスを小さくして一定サイズ内に収める (カメラ表示位置がずれないように)。
   Widget _coverageGrid(int k) {
-    return LayoutBuilder(builder: (ctx, c) {
-      const cell = 8.0;
-      final cols = (c.maxWidth / cell).floor().clamp(20, 200);
-      var cap = k;
-      for (final e in _seenEsi) {
-        if (e + 1 > cap) cap = e + 1;
-      }
-      final rows = cap <= 0 ? 0 : (cap + cols - 1) ~/ cols;
-      final cw = c.maxWidth / cols;
-      return SizedBox(
-        width: c.maxWidth,
-        height: rows * cw,
-        child: CustomPaint(
-          painter: _CoverageGridPainter(seen: _seenEsi, k: k, cols: cols),
-        ),
-      );
-    });
+    return SizedBox(
+      height: 72,
+      width: double.infinity,
+      child: CustomPaint(painter: _CoverageGridPainter(seen: _seenEsi, k: k)),
+    );
   }
 
   /// 受信完了時の統計テーブル
@@ -666,7 +655,7 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
               ],
               // 受信データのカバレッジ格子: ESI ごとのマスを、受信済み=緑(source)/水色(repair)、
               // 未受信=灰で塗る。埋まらない穴が「取れていないフレームのデータ」= 未完了の原因。
-              if (_payload == null && total != null && _seenEsi.isNotEmpty) ...[
+              if (_payload == null && total != null) ...[
                 _coverageGrid(total),
                 const SizedBox(height: 4),
               ],
@@ -783,10 +772,9 @@ class _DetectedQuadPainter extends CustomPainter {
 /// 未受信=灰で塗る。埋まらない穴 = まだ取れていないパケット (= 復元が完了しない原因) が
 /// 一目でわかる。RaptorQ は distinct が必要数 K に届くと復元できる。
 class _CoverageGridPainter extends CustomPainter {
-  _CoverageGridPainter({required this.seen, required this.k, required this.cols});
+  _CoverageGridPainter({required this.seen, required this.k});
   final Set<int> seen;
   final int k; // 必要 source パケット数 (ESI < k = source, >= k = repair)
-  final int cols;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -794,19 +782,32 @@ class _CoverageGridPainter extends CustomPainter {
     for (final e in seen) {
       if (e + 1 > cap) cap = e + 1;
     }
-    if (cap <= 0 || cols <= 0) return;
-    final cw = size.width / cols;
+    if (cap <= 0 || size.width <= 0 || size.height <= 0) return;
+    // 固定領域 (size) に cap マスを正方セルで収める。増えるほどセルを小さくする。
+    var s = 8.0; // 希望セルサイズ
+    var cols = (size.width / s).floor();
+    if (cols < 1) cols = 1;
+    var rows = (cap / cols).ceil();
+    while (rows * s > size.height && s > 1.0) {
+      s -= 0.5;
+      cols = (size.width / s).floor();
+      if (cols < 1) cols = 1;
+      rows = (cap / cols).ceil();
+    }
+    final gap = s > 3 ? 1.0 : 0.0;
     final unseen = Paint()..color = const Color(0xFF37474F);
     final src = Paint()..color = const Color(0xFF4CAF50);
     final rep = Paint()..color = const Color(0xFF29B6F6);
     for (var i = 0; i < cap; i++) {
       final r = i ~/ cols, c = i % cols;
-      final rect = Rect.fromLTWH(c * cw, r * cw, cw - 1, cw - 1);
-      canvas.drawRect(rect, seen.contains(i) ? (i < k ? src : rep) : unseen);
+      canvas.drawRect(
+        Rect.fromLTWH(c * s, r * s, s - gap, s - gap),
+        seen.contains(i) ? (i < k ? src : rep) : unseen,
+      );
     }
   }
 
   @override
   bool shouldRepaint(covariant _CoverageGridPainter old) =>
-      old.seen.length != seen.length || old.k != k || old.cols != cols;
+      old.seen.length != seen.length || old.k != k;
 }
