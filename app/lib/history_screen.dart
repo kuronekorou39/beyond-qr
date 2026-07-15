@@ -1,15 +1,48 @@
+import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter_file_dialog/flutter_file_dialog.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'history_store.dart';
 
-/// 受信ファイルを OS の共有シートで送る (ダウンロード保存・他アプリ送付など)
+/// ファイルシステムで安全なファイル名にする (パス区切り・禁止文字を _ に)。
+String _safeFileName(String n) {
+  final s = n.replaceAll(RegExp(r'[\\/:*?"<>|\x00-\x1f]'), '_').trim();
+  return s.isEmpty ? 'file' : s;
+}
+
+/// 受信ファイルを OS の共有シートで送る (他アプリ送付・ドライブ等)。
+/// 内部保存は ID 名 (拡張子なし) なので、受け側が正しい表示名・拡張子を得られるよう
+/// 元のファイル名でキャッシュにコピーしてから共有する。
 Future<void> shareReceived(HistoryItem item) async {
   final file = HistoryStore.instance.receivedFile(item);
   if (file == null || !await file.exists()) return;
-  await SharePlus.instance.share(ShareParams(
-    files: [XFile(file.path, mimeType: item.type, name: item.name)],
-  ));
+  XFile x;
+  try {
+    final tmp = await getTemporaryDirectory();
+    final dir = Directory('${tmp.path}/share')..createSync(recursive: true);
+    final dst = File('${dir.path}/${_safeFileName(item.name)}');
+    await file.copy(dst.path);
+    x = XFile(dst.path, mimeType: item.type, name: item.name);
+  } catch (_) {
+    x = XFile(file.path, mimeType: item.type, name: item.name);
+  }
+  await SharePlus.instance.share(ShareParams(files: [x]));
+}
+
+/// 受信ファイルを端末の任意の場所へ「ファイルに保存」する (Android は SAF の保存ダイアログ)。
+/// 元のファイル名を初期値にする。保存できたら true、キャンセル/失敗で false。
+Future<bool> saveReceivedToFile(HistoryItem item) async {
+  final file = HistoryStore.instance.receivedFile(item);
+  if (file == null || !await file.exists()) return false;
+  final params = SaveFileDialogParams(
+    sourceFilePath: file.path,
+    fileName: _safeFileName(item.name),
+    mimeTypesFilter: item.type.isNotEmpty ? [item.type] : null,
+  );
+  final saved = await FlutterFileDialog.saveFile(params: params);
+  return saved != null;
 }
 
 class HistoryScreen extends StatelessWidget {
@@ -74,10 +107,20 @@ class _ReceivedList extends StatelessWidget {
             if (it.note != null) it.note!,
           ].join('\n')),
           isThreeLine: it.note != null,
-          trailing: IconButton(
-            icon: const Icon(Icons.share),
-            tooltip: '共有 (ダウンロード保存など)',
-            onPressed: () => shareReceived(it),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              IconButton(
+                icon: const Icon(Icons.save_alt),
+                tooltip: '端末に保存',
+                onPressed: () => saveReceivedToFile(it),
+              ),
+              IconButton(
+                icon: const Icon(Icons.share),
+                tooltip: '共有',
+                onPressed: () => shareReceived(it),
+              ),
+            ],
           ),
           onTap: () => Navigator.of(context).push(MaterialPageRoute(
             builder: (_) => _ViewerPage(item: it),
@@ -157,8 +200,13 @@ class _ViewerPage extends StatelessWidget {
         title: Text(item.name),
         actions: [
           IconButton(
+            icon: const Icon(Icons.save_alt),
+            tooltip: '端末に保存',
+            onPressed: () => saveReceivedToFile(item),
+          ),
+          IconButton(
             icon: const Icon(Icons.share),
-            tooltip: '共有 (ダウンロード保存など)',
+            tooltip: '共有',
             onPressed: () => shareReceived(item),
           ),
         ],

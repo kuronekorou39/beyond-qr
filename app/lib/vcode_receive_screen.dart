@@ -7,7 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
-import 'history_screen.dart' show shareReceived;
+import 'history_screen.dart' show shareReceived, saveReceivedToFile;
 import 'history_store.dart';
 import 'src/rust/api/fountain.dart';
 import 'src/rust/api/vcode.dart';
@@ -487,6 +487,15 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
     super.dispose();
   }
 
+  /// 受信ファイルを端末の任意の場所へ保存 (SAF ダイアログ)。結果をスナックバーで通知。
+  Future<void> _saveToFile(HistoryItem item) async {
+    final ok = await saveReceivedToFile(item);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(ok ? '端末に保存しました' : '保存をキャンセルしました')),
+    );
+  }
+
   /// 受信データのカバレッジ格子 (ESI ごとの被覆)。幅からセル数を決めて正方マスで敷く。
   Widget _coverageGrid(int k) {
     return LayoutBuilder(builder: (ctx, c) {
@@ -576,16 +585,23 @@ class _VcodeReceiveScreenState extends State<VcodeReceiveScreen>
                                 style: const TextStyle(fontSize: 11)),
                           ),
                         const SizedBox(height: 12),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
+                        Wrap(
+                          alignment: WrapAlignment.center,
+                          spacing: 12,
+                          runSpacing: 8,
                           children: [
+                            if (_savedItem != null)
+                              FilledButton.icon(
+                                onPressed: () => _saveToFile(_savedItem!),
+                                icon: const Icon(Icons.save_alt),
+                                label: const Text('端末に保存'),
+                              ),
                             if (_savedItem != null)
                               FilledButton.tonalIcon(
                                 onPressed: () => shareReceived(_savedItem!),
                                 icon: const Icon(Icons.share),
-                                label: const Text('共有 / 保存'),
+                                label: const Text('共有'),
                               ),
-                            const SizedBox(width: 12),
                             FilledButton(
                                 onPressed: _reset, child: const Text('もう一度受信')),
                           ],
